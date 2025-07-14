@@ -5,7 +5,7 @@ const axios = require('axios');
 const cheerio = require('cheerio');
 const path = require('path');
 const { URL } = require('url');
-const fileUpload = require('express-fileupload'); // NOVO: Importa o express-fileupload
+const fileUpload = require('express-fileupload');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -18,7 +18,7 @@ const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
 const USD_TO_BRL_RATE = 5.00;
 const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g;
 
-// NOVO: Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
+// Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
 // É crucial que este middleware esteja antes do seu proxy principal se você for usar req.files
 app.use(fileUpload({
     limits: { fileSize: 50 * 1024 * 1024 }, // Limite de 50MB, ajuste se necessário
@@ -26,6 +26,16 @@ app.use(fileUpload({
     uriDecodeFileNames: true, // Decodifica nomes de arquivo
     preserveExtension: true // Preserva extensão de arquivos
 }));
+
+// ---
+// NOVO: Regra de redirecionamento explícita para a página de e-mail
+// Este app.get é executado ANTES do middleware de proxy genérico
+app.get('/pt/witch-power/email', (req, res) => {
+    console.log('Interceptando requisição para /pt/witch-power/email. Redirecionando para /pt/witch-power/onboarding.');
+    // Redirecionamento HTTP 302 (temporário) do seu próprio proxy
+    res.redirect(302, '/pt/witch-power/onboarding');
+});
+// ---
 
 // Middleware Principal do Proxy Reverso
 app.use(async (req, res) => {
@@ -74,7 +84,7 @@ app.use(async (req, res) => {
 
             if (photoFile) {
                 // Reconstruir o FormData para enviar via Axios
-                const formData = new require('form-data')();
+                const formData = new (require('form-data'))(); // Usar new require('form-data')()
                 formData.append('photo', photoFile.data, { // Use photoFile.data para o buffer do arquivo
                     filename: photoFile.name,
                     contentType: photoFile.mimetype,
@@ -117,8 +127,10 @@ app.use(async (req, res) => {
                     fullRedirectUrl = redirectLocation; // Cai para o original se falhar o parse
                 }
 
+                // Esta lógica de redirecionamento de servidor de destino ainda é útil se o appnebula.co redirecionar para /email
+                // mas a regra app.get() adicionada acima é a principal para requisições *diretas* ao proxy.
                 if (fullRedirectUrl.includes('/pt/witch-power/email')) {
-                    console.log('Interceptando redirecionamento para /email. Redirecionando para /onboarding.');
+                    console.log('Interceptando redirecionamento do servidor de destino para /email. Redirecionando para /onboarding.');
                     return res.redirect(302, '/pt/witch-power/onboarding');
                 }
 
@@ -241,8 +253,9 @@ app.use(async (req, res) => {
             `);
 
             // REDIRECIONAMENTO FRONTAL (CLIENT-SIDE) PARA /pt/witch-power/email
+            // Esta regra agora é mais uma medida de segurança, já que o app.get() deve lidar com a maioria dos casos.
             if (req.url.includes('/pt/witch-power/email')) {
-                console.log('Detectada slug /email no frontend. Injetando script de redirecionamento.');
+                console.log('Detectada slug /email no frontend (regra secundária). Injetando script de redirecionamento.');
                 $('head').append(`
                     <script>
                         window.location.replace('/pt/witch-power/onboarding');
