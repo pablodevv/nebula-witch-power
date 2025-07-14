@@ -19,23 +19,12 @@ const USD_TO_BRL_RATE = 5.00;
 const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g;
 
 // Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
-// É crucial que este middleware esteja antes do seu proxy principal se você for usar req.files
 app.use(fileUpload({
     limits: { fileSize: 50 * 1024 * 1024 }, // Limite de 50MB, ajuste se necessário
-    createParentPath: true, // Cria pastas se necessário
-    uriDecodeFileNames: true, // Decodifica nomes de arquivo
-    preserveExtension: true // Preserva extensão de arquivos
+    createParentPath: true,
+    uriDecodeFileNames: true,
+    preserveExtension: true
 }));
-
-// ---
-// ATUALIZADO: Regra de redirecionamento explícita para a página de e-mail
-// Usa app.use para capturar qualquer requisição que comece com /pt/witch-power/email
-app.use('/pt/witch-power/email', (req, res) => {
-    console.log('Interceptando requisição para /pt/witch-power/email. Redirecionando para /pt/witch-power/onboarding.');
-    // Redirecionamento HTTP 302 (temporário) do seu próprio proxy
-    res.redirect(302, '/pt/witch-power/onboarding');
-});
-// ---
 
 // Middleware Principal do Proxy Reverso
 app.use(async (req, res) => {
@@ -44,23 +33,22 @@ app.use(async (req, res) => {
 
     // Remove headers que podem causar problemas em proxies ou loops
     const requestHeaders = { ...req.headers };
-    delete requestHeaders['host']; // Axios definirá o host correto para o targetDomain
-    delete requestHeaders['connection']; // Evita Keep-Alive incorreto em proxies
-    delete requestHeaders['x-forwarded-for']; // Pode ser gerado pelo proxy do Render, evitando duplicidade
-    delete requestHeaders['accept-encoding']; // Axios pode ter problemas com múltiplos encodings ou o servidor de destino
+    delete requestHeaders['host'];
+    delete requestHeaders['connection'];
+    delete requestHeaders['x-forwarded-for'];
+    delete requestHeaders['accept-encoding'];
 
     // Lógica para Proxeamento do Subdomínio de Leitura (Mão)
     if (req.url.startsWith('/reading/')) {
         targetDomain = READING_SUBDOMAIN_TARGET;
         requestPath = req.url.substring('/reading'.length);
-        if (requestPath === '') requestPath = '/'; // Garante que /reading/ se torne /
+        if (requestPath === '') requestPath = '/';
         console.log(`[READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
         console.log(`[READING PROXY] Método: ${req.method}`);
 
-        // Loga o conteúdo de req.files se for upload (multipart/form-data)
         if (req.files && Object.keys(req.files).length > 0) {
             console.log(`[READING PROXY] Arquivos recebidos: ${JSON.stringify(Object.keys(req.files))}`);
-            const photoFile = req.files.photo; // 'photo' é o nome do campo do formulário
+            const photoFile = req.files.photo;
             if (photoFile) {
                 console.log(`[READING PROXY] Arquivo 'photo': name=${photoFile.name}, size=${photoFile.size}, mimetype=${photoFile.mimetype}`);
             }
@@ -74,14 +62,12 @@ app.use(async (req, res) => {
     const targetUrl = `${targetDomain}${requestPath}`;
 
     try {
-        let requestData = req.body; // Para requisições JSON ou form-urlencoded
+        let requestData = req.body;
 
-        // Se for um upload de arquivo, o `express-fileupload` popula `req.files`
         if (req.files && Object.keys(req.files).length > 0) {
-            const photoFile = req.files.photo; // Assume que o campo da imagem é 'photo'
+            const photoFile = req.files.photo;
 
             if (photoFile) {
-                // Reconstruir o FormData para enviar via Axios
                 const formData = new (require('form-data'))();
                 formData.append('photo', photoFile.data, {
                     filename: photoFile.name,
@@ -118,8 +104,7 @@ app.use(async (req, res) => {
                     fullRedirectUrl = redirectLocation;
                 }
 
-                // Esta lógica de redirecionamento de servidor de destino ainda é útil se o appnebula.co redirecionar para /email
-                // mas a regra app.use() adicionada acima é a principal para requisições *diretas* ao proxy.
+                // Esta regra AINDA captura redirecionamentos do SERVIDOR DE DESTINO para /email
                 if (fullRedirectUrl.includes('/pt/witch-power/email')) {
                     console.log('Interceptando redirecionamento do servidor de destino para /email. Redirecionando para /onboarding.');
                     return res.redirect(302, '/pt/witch-power/onboarding');
@@ -236,16 +221,30 @@ app.use(async (req, res) => {
                 </script>
             `);
 
-            // REDIRECIONAMENTO FRONTAL (CLIENT-SIDE) PARA /pt/witch-power/email
-            // Esta regra agora é mais uma medida de segurança, já que o app.use() deve lidar com a maioria dos casos.
-            if (req.url.includes('/pt/witch-power/email')) {
-                console.log('Detectada slug /email no frontend (regra secundária). Injetando script de redirecionamento.');
-                $('head').append(`
-                    <script>
-                        window.location.replace('/pt/witch-power/onboarding');
-                    </script>
-                `);
-            }
+            // ---
+            // NOVO E MAIS ROBUSTO REDIRECIONAMENTO CLIENT-SIDE
+            // Este script será injetado em TODAS as páginas HTML
+            $('head').append(`
+                <script>
+                    function handleEmailRedirect() {
+                        // Verifica se a URL atual começa com o caminho da página de e-mail
+                        if (window.location.pathname.startsWith('/pt/witch-power/email')) {
+                            console.log('CLIENT-SIDE REDIRECT: URL /pt/witch-power/email detectada. Redirecionando para /pt/witch-power/onboarding');
+                            window.location.replace('/pt/witch-power/onboarding'); // Usa replace para não deixar no histórico
+                        }
+                    }
+
+                    // 1. Executa no carregamento inicial da página (para quando há uma requisição HTTP direta)
+                    document.addEventListener('DOMContentLoaded', handleEmailRedirect);
+
+                    // 2. Monitora mudanças na história do navegador (para navegações via SPA - pushState/replaceState)
+                    window.addEventListener('popstate', handleEmailRedirect);
+
+                    // Opcional: Um pequeno atraso para capturar transições muito rápidas de SPAs
+                    // setTimeout(handleEmailRedirect, 50);
+                </script>
+            `);
+            // ---
 
             // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialChoice
             if (req.url.includes('/pt/witch-power/trialChoice')) {
@@ -282,7 +281,6 @@ app.use(async (req, res) => {
 
             res.status(response.status).send($.html());
         } else {
-            // Para outros tipos de conteúdo (JS, CSS, imagens, etc.)
             res.status(response.status).send(response.data);
         }
 
