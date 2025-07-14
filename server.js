@@ -2,158 +2,100 @@ const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const app = express();
-const PORT = process.env.PORT || 10000; // Mudei para 10000, pois seu log indica que está rodando nessa porta
+const PORT = process.env.PORT || 10000; // Garantindo que a porta esteja correta para o Render
 
-// URL base do seu site de destino (Next.js)
-const TARGET_URL = 'https://appnebula.co';
+// URLs de destino
+const MAIN_TARGET_URL = 'https://appnebula.co';
+const API_TARGET_URL = 'https://reading.nebulahoroscope.com'; // Novo destino para a API
 
-// Opções de proxy base para reuso
-const baseProxyOptions = {
-  target: TARGET_URL,
-  changeOrigin: true, // Necessário para que o host de destino seja appnebula.co
-  secure: true, // Use HTTPS
-  ws: true, // Habilita suporte a WebSockets, se necessário
-  selfHandleResponse: true, // Permite manipular a resposta para reescrever URLs
-  // debug: true, // Descomente para logs detalhados do http-proxy-middleware
+// --- Regras de Proxy ---
 
+// 1. **Regra para API do Subdomínio:**
+// Se o seu frontend proxyficado tenta acessar /api/v1/palmistry/detect
+// e você quer que isso seja proxyficado para reading.nebulahoroscope.com
+// Esta é a regra mais específica e deve vir primeiro.
+app.use('/api/', createProxyMiddleware({
+  target: API_TARGET_URL,
+  changeOrigin: true, // Necessário para mudar o cabeçalho Host para o domínio da API
+  secure: true,       // Permite conexões HTTPS
+  ws: true,           // Habilita proxy para WebSockets
   onProxyReq: (proxyReq, req, res) => {
-    // Adiciona o header 'Accept-Encoding' para garantir que as respostas sejam descompactadas pelo proxy
-    // Isso é crucial para que possamos manipular o conteúdo como texto.
-    proxyReq.setHeader('Accept-Encoding', 'identity');
-    console.log(`Requisição recebida: ${req.url} -> Proxy para: ${proxyReq.protocol}//${proxyReq.host}${proxyReq.path}`);
+    console.log(`[API PROXY] Requisição: ${req.url} -> Proxy para: ${proxyReq.protocol}//${proxyReq.host}${proxyReq.path}`);
   },
-
-  onProxyRes: (proxyRes, req, res) => {
-    // Primeiro, copie todos os cabeçalhos da resposta original para a resposta do cliente
-    Object.keys(proxyRes.headers).forEach(key => {
-      const headerValue = proxyRes.headers[key];
-      // Exclua Content-Encoding se o corpo for modificado, para evitar problemas de descompressão do navegador
-      if (key.toLowerCase() === 'content-encoding' && proxyRes.statusCode !== 301 && proxyRes.statusCode !== 302) {
-          // Não copiaremos o Content-Encoding se estivermos alterando o conteúdo
-          // e se não for um redirecionamento (que não tem corpo para manipular)
-          return;
-      }
-      res.setHeader(key, headerValue);
-    });
-
-    const originalEnd = res.end;
-    const chunks = [];
-
-    proxyRes.on('data', (chunk) => {
-      chunks.push(chunk);
-    });
-
-    proxyRes.on('end', () => {
-      const buffer = Buffer.concat(chunks);
-      let data = buffer.toString('utf8');
-
-      const contentType = proxyRes.headers['content-type'];
-
-      // Apenas tente reescrever se for HTML, CSS ou JavaScript
-      if (contentType && (contentType.includes('text/html') || contentType.includes('text/css') || contentType.includes('application/javascript'))) {
-        // Remove a URL do TARGET_URL do corpo da resposta, tornando os links relativos.
-        // Isso é geralmente a maneira mais segura para Next.js quando o proxy está no root.
-        data = data.replace(new RegExp(TARGET_URL.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'), '');
-
-        // Trate caminhos absolutos do Next.js que podem ser "/_next/..." se o Next.js os gerar assim
-        // Esta parte pode ser sensível. Se o Next.js já gera paths relativos, pode não ser necessário.
-        // O proxy já está configurado para lidar com '/_next/static/', então os paths devem funcionar.
-        // No entanto, se houver links *dentro* do HTML para "/pt/witch-power/...", eles precisarão ser mantidos.
-        // A regra de proxy para /pt/witch-power/ já deveria reescrever isso.
-      }
-      
-      // Defina o Content-Length com base na string final que será enviada
-      res.setHeader('Content-Length', Buffer.byteLength(data, 'utf8'));
-      
-      // Finaliza a resposta com os dados modificados
-      originalEnd.call(res, data);
-    });
-  },
-
   onError: (err, req, res) => {
-    console.error(`Erro no proxy para ${req.url}: ${err.message}`);
+    console.error(`[API PROXY ERROR] Erro no proxy da API para ${req.url}: ${err.message}`);
     if (!res.headersSent) {
       res.writeHead(500, { 'Content-Type': 'text/plain' });
-      res.end('Something went wrong. Please check proxy logs for details.');
+      res.end('Erro ao proxyficar a requisição da API.');
     }
   },
-};
-
-// Crie a instância do proxy para a regra padrão (que é modificada para assets e funil)
-const apiProxy = createProxyMiddleware(baseProxyOptions);
-
-// **Ordem das regras é CRUCIAL**
-
-// 1. Regra para todas as requisições que começam com /_next/static/
-// Esta regra deve vir antes das outras para garantir que os assets do Next.js sejam proxyficados corretamente.
-// Para esses assets, não precisamos de manipulação complexa do path, apenas proxy direto.
-app.use('/_next/static/', apiProxy);
-
-// 2. Regra para /pt/witch-power/ e suas sub-rotas
-app.use('/pt/witch-power/', createProxyMiddleware({
-    target: TARGET_URL,
-    changeOrigin: true,
-    secure: true,
-    ws: true,
-    selfHandleResponse: true,
-    onProxyReq: (proxyReq, req, res) => {
-        // Remove o prefixo '/pt/witch-power' da URL antes de enviar para o destino
-        let newPath = req.url.replace('/pt/witch-power', '');
-        if (newPath === '') newPath = '/'; // Se for '/pt/witch-power' vira '/'
-        
-        proxyReq.path = newPath;
-        proxyReq.setHeader('Accept-Encoding', 'identity'); // Descompactar para manipular
-        console.log(`Requisição de funil recebida: ${req.url} -> Proxy para: ${proxyReq.protocol}//${proxyReq.host}${proxyReq.path}`);
-    },
-    onProxyRes: (proxyRes, req, res) => {
-        // Copia todos os cabeçalhos da resposta original
-        Object.keys(proxyRes.headers).forEach(key => {
-            const headerValue = proxyRes.headers[key];
-            if (key.toLowerCase() === 'content-encoding' && proxyRes.statusCode !== 301 && proxyRes.statusCode !== 302) {
-                return;
-            }
-            res.setHeader(key, headerValue);
-        });
-
-        const originalEnd = res.end;
-        const chunks = [];
-
-        proxyRes.on('data', (chunk) => {
-            chunks.push(chunk);
-        });
-
-        proxyRes.on('end', () => {
-            const buffer = Buffer.concat(chunks);
-            let data = buffer.toString('utf8');
-            const contentType = proxyRes.headers['content-type'];
-
-            if (contentType && (contentType.includes('text/html') || contentType.includes('text/css') || contentType.includes('application/javascript'))) {
-                // Remove a URL do TARGET_URL do corpo da resposta
-                data = data.replace(new RegExp(TARGET_URL.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'), '');
-                
-                // IMPORTANT: Aqui, se a página do Next.js tem links internos como "/alguma-outra-pagina",
-                // e eles devem ser acessíveis via proxy em "/pt/witch-power/alguma-outra-pagina",
-                // você precisaria reescrever esses links relativos.
-                // Mas para assets, a primeira regra do proxy já lida.
-            }
-
-            res.setHeader('Content-Length', Buffer.byteLength(data, 'utf8'));
-            originalEnd.call(res, data);
-        });
-    },
-    onError: (err, req, res) => {
-        console.error(`Erro no proxy do funil para ${req.url}: ${err.message}`);
-        if (!res.headersSent) {
-            res.writeHead(500, { 'Content-Type': 'text/plain' });
-            res.end('Something went wrong with the funnle proxy. Please check logs.');
-        }
-    },
 }));
 
+// 2. **ESSENCIAL**: Regra para TODOS os arquivos estáticos do Next.js (`/_next/static/...`)
+// Esta regra DEVE vir antes das outras para interceptar os assets de qualquer página.
+// Ela simplesmente repassa a requisição para o MAIN_TARGET_URL, mantendo o caminho completo.
+app.use('/_next/static/', createProxyMiddleware({
+  target: MAIN_TARGET_URL,
+  changeOrigin: true,
+  secure: true,
+  ws: true,
+  onProxyReq: (proxyReq, req, res) => {
+    console.log(`[ASSET] Requisição: ${req.url} -> Proxy para: ${proxyReq.protocol}//${proxyReq.host}${proxyReq.path}`);
+  },
+  onError: (err, req, res) => {
+    console.error(`[ASSET ERROR] Erro no proxy para ${req.url}: ${err.message}`);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Erro ao carregar asset.');
+    }
+  },
+}));
 
-// 3. Regra catch-all para a rota raiz (/) e outras rotas que não são específicas de funil
-app.use('/', apiProxy);
+// 3. Regra para as rotas que começam com `/pt/witch-power/` (seu funil)
+// Esta é a lógica de proxy que reescreve a URL.
+app.use('/pt/witch-power/', createProxyMiddleware({
+  target: MAIN_TARGET_URL,
+  changeOrigin: true,
+  secure: true,
+  ws: true,
+  pathRewrite: {
+    '^/pt/witch-power': '', // Remove "/pt/witch-power" do início do caminho
+  },
+  onProxyReq: (proxyReq, req, res) => {
+    // Se o caminho reescrito for vazio, use '/' para a raiz
+    if (proxyReq.path === '') {
+      proxyReq.path = '/';
+    }
+    console.log(`[FUNIL] Requisição: ${req.url} -> Proxy para: ${proxyReq.protocol}//${proxyReq.host}${proxyReq.path}`);
+  },
+  onError: (err, req, res) => {
+    console.error(`[FUNIL ERROR] Erro no proxy do funil para ${req.url}: ${err.message}`);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Erro ao carregar página do funil.');
+    }
+  },
+}));
 
+// 4. Regra genérica para todas as outras requisições (ex: "/")
+// Esta regra vai pegar tudo que não foi pego pelas regras acima,
+// enviando diretamente para o MAIN_TARGET_URL (appnebula.co).
+app.use('/', createProxyMiddleware({
+  target: MAIN_TARGET_URL,
+  changeOrigin: true,
+  secure: true,
+  ws: true,
+  onProxyReq: (proxyReq, req, res) => {
+    console.log(`[GERAL] Requisição: ${req.url} -> Proxy para: ${proxyReq.protocol}//${proxyReq.host}${proxyReq.path}`);
+  },
+  onError: (err, req, res) => {
+    console.error(`[GERAL ERROR] Erro no proxy geral para ${req.url}: ${err.message}`);
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Erro geral no proxy.');
+    }
+  },
+}));
 
 app.listen(PORT, () => {
   console.log(`Proxy server running on port ${PORT}`);
