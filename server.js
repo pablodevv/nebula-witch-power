@@ -28,9 +28,9 @@ app.use(fileUpload({
 }));
 
 // ---
-// NOVO: Regra de redirecionamento explícita para a página de e-mail
-// Este app.get é executado ANTES do middleware de proxy genérico
-app.get('/pt/witch-power/email', (req, res) => {
+// ATUALIZADO: Regra de redirecionamento explícita para a página de e-mail
+// Usa app.use para capturar qualquer requisição que comece com /pt/witch-power/email
+app.use('/pt/witch-power/email', (req, res) => {
     console.log('Interceptando requisição para /pt/witch-power/email. Redirecionando para /pt/witch-power/onboarding.');
     // Redirecionamento HTTP 302 (temporário) do seu próprio proxy
     res.redirect(302, '/pt/witch-power/onboarding');
@@ -56,7 +56,6 @@ app.use(async (req, res) => {
         if (requestPath === '') requestPath = '/'; // Garante que /reading/ se torne /
         console.log(`[READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
         console.log(`[READING PROXY] Método: ${req.method}`);
-        // Removi os logs de headers originais aqui para evitar poluir muito, mas você pode reativar se precisar debuggar.
 
         // Loga o conteúdo de req.files se for upload (multipart/form-data)
         if (req.files && Object.keys(req.files).length > 0) {
@@ -66,7 +65,6 @@ app.use(async (req, res) => {
                 console.log(`[READING PROXY] Arquivo 'photo': name=${photoFile.name}, size=${photoFile.size}, mimetype=${photoFile.mimetype}`);
             }
         } else {
-            // Este log só aparecerá se não for um upload de arquivo, para ver o tipo de corpo.
             console.log(`[READING PROXY] Corpo recebido (tipo): ${typeof req.body}`);
         }
     } else {
@@ -84,29 +82,27 @@ app.use(async (req, res) => {
 
             if (photoFile) {
                 // Reconstruir o FormData para enviar via Axios
-                const formData = new (require('form-data'))(); // Usar new require('form-data')()
-                formData.append('photo', photoFile.data, { // Use photoFile.data para o buffer do arquivo
+                const formData = new (require('form-data'))();
+                formData.append('photo', photoFile.data, {
                     filename: photoFile.name,
                     contentType: photoFile.mimetype,
                 });
                 requestData = formData;
-                // Importante: Axios cuidará dos cabeçalhos do FormData (incluindo o Content-Type com o boundary correto)
-                // Então, removemos o Content-Type original e adicionamos os do formData
                 delete requestHeaders['content-type'];
                 delete requestHeaders['content-length'];
-                Object.assign(requestHeaders, formData.getHeaders()); // Adiciona os cabeçalhos do FormData
+                Object.assign(requestHeaders, formData.getHeaders());
             }
         }
 
         const response = await axios({
             method: req.method,
             url: targetUrl,
-            headers: requestHeaders, // Use os cabeçalhos filtrados
+            headers: requestHeaders,
             data: requestData,
-            responseType: 'arraybuffer', // Essencial para lidar com conteúdo binário/não-texto
-            maxRedirects: 0, // Não seguir redirecionamentos automaticamente
+            responseType: 'arraybuffer',
+            maxRedirects: 0,
             validateStatus: function (status) {
-                return status >= 200 && status < 400; // Valida 2xx e 3xx
+                return status >= 200 && status < 400;
             },
         });
 
@@ -114,34 +110,28 @@ app.use(async (req, res) => {
         if (response.status >= 300 && response.status < 400) {
             const redirectLocation = response.headers.location;
             if (redirectLocation) {
-                // Tentar normalizar a URL de redirecionamento para garantir que ela seja absoluta
                 let fullRedirectUrl;
                 try {
-                    // Cuidado com new URL - pode precisar de uma base se a URL for relativa.
-                    // Se o redirectLocation já for absoluto, new URL (redirectLocation) funciona.
-                    // Se for relativo, new URL(redirectLocation, req.protocol + '://' + req.get('host')) seria o ideal,
-                    // mas como estamos proxynando, a base deve ser a do TARGET_URL
                     fullRedirectUrl = new URL(redirectLocation, targetDomain).href;
                 } catch (e) {
                     console.error("Erro ao parsear URL de redirecionamento:", redirectLocation, e.message);
-                    fullRedirectUrl = redirectLocation; // Cai para o original se falhar o parse
+                    fullRedirectUrl = redirectLocation;
                 }
 
                 // Esta lógica de redirecionamento de servidor de destino ainda é útil se o appnebula.co redirecionar para /email
-                // mas a regra app.get() adicionada acima é a principal para requisições *diretas* ao proxy.
+                // mas a regra app.use() adicionada acima é a principal para requisições *diretas* ao proxy.
                 if (fullRedirectUrl.includes('/pt/witch-power/email')) {
                     console.log('Interceptando redirecionamento do servidor de destino para /email. Redirecionando para /onboarding.');
                     return res.redirect(302, '/pt/witch-power/onboarding');
                 }
 
                 let proxiedRedirectPath = fullRedirectUrl;
-                // Assegurar que a URL reescrita aponte para o seu proxy, não para o destino original
                 if (proxiedRedirectPath.startsWith(MAIN_TARGET_URL)) {
                     proxiedRedirectPath = proxiedRedirectPath.replace(MAIN_TARGET_URL, '');
                 } else if (proxiedRedirectPath.startsWith(READING_SUBDOMAIN_TARGET)) {
                     proxiedRedirectPath = proxiedRedirectPath.replace(READING_SUBDOMAIN_TARGET, '/reading');
                 }
-                if (proxiedRedirectPath === '') proxiedRedirectPath = '/'; // Redirecionamento para a raiz
+                if (proxiedRedirectPath === '') proxiedRedirectPath = '/';
 
                 console.log(`Redirecionamento do destino: ${fullRedirectUrl} -> Reescrevendo para: ${proxiedRedirectPath}`);
                 return res.redirect(response.status, proxiedRedirectPath);
@@ -150,7 +140,6 @@ app.use(async (req, res) => {
 
         // Repassa Cabeçalhos da Resposta do Destino para o Cliente
         Object.keys(response.headers).forEach(header => {
-            // Evitar cabeçalhos que podem causar problemas ou são gerados automaticamente
             if (!['transfer-encoding', 'content-encoding', 'content-length', 'set-cookie', 'host', 'connection'].includes(header.toLowerCase())) {
                 res.setHeader(header, response.headers[header]);
             }
@@ -161,12 +150,10 @@ app.use(async (req, res) => {
         if (setCookieHeader) {
             const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
             const modifiedCookies = cookies.map(cookie => {
-                // Remove o domínio original e o 'Secure' se estiver em HTTP (Render usa HTTPS por padrão)
-                // e garante que o Path seja o correto do proxy.
                 return cookie
-                    .replace(/Domain=[^;]+/, '') // Remove o domínio original
-                    .replace(/; Secure/, '')      // Remove a flag Secure (se necessário, para HTTP)
-                    .replace(/; Path=\//, `; Path=${req.baseUrl || '/'}`); // Ajusta o Path
+                    .replace(/Domain=[^;]+/, '')
+                    .replace(/; Secure/, '')
+                    .replace(/; Path=\//, `; Path=${req.baseUrl || '/'}`);
             });
             res.setHeader('Set-Cookie', modifiedCookies);
         }
@@ -192,10 +179,8 @@ app.use(async (req, res) => {
                 if (attrName) {
                     let originalUrl = element.attr(attrName);
                     if (originalUrl) {
-                        // Tratar URLs que já começam com o domínio do proxy para não reescrevê-las
                         if (originalUrl.startsWith('/') && !originalUrl.startsWith('/reading/')) {
                             // URLs relativas para o domínio principal
-                            // Não faz nada, já estão corretas para o proxy
                         } else if (originalUrl.startsWith('/reading/')) {
                             // URLs para o subdomínio de leitura, já estão corretas
                         } else if (originalUrl.startsWith(MAIN_TARGET_URL)) {
@@ -208,7 +193,6 @@ app.use(async (req, res) => {
             });
 
             // Script para reescrever URLs de API dinâmicas no JavaScript
-            // Este script está correto e lida com Fetch e XHR
             $('head').prepend(`
                 <script>
                     (function() {
@@ -253,7 +237,7 @@ app.use(async (req, res) => {
             `);
 
             // REDIRECIONAMENTO FRONTAL (CLIENT-SIDE) PARA /pt/witch-power/email
-            // Esta regra agora é mais uma medida de segurança, já que o app.get() deve lidar com a maioria dos casos.
+            // Esta regra agora é mais uma medida de segurança, já que o app.use() deve lidar com a maioria dos casos.
             if (req.url.includes('/pt/witch-power/email')) {
                 console.log('Detectada slug /email no frontend (regra secundária). Injetando script de redirecionamento.');
                 $('head').append(`
@@ -273,9 +257,9 @@ app.use(async (req, res) => {
                         return `R$ ${brlValue}`;
                     });
                 });
-                $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais'); // Exemplo de reescrita
-                $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral'); // Exemplo de reescrita
-                $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora'); // Exemplo de reescrita
+                $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
+                $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
+                $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
                 $('h2:contains("Trial Choice")').text('Escolha sua Prova Gratuita (Preços em Reais)');
                 $('p:contains("Selecione sua opção de teste")').text('Agora com preços adaptados para o Brasil!');
             }
@@ -306,14 +290,12 @@ app.use(async (req, res) => {
         console.error('Erro no proxy:', error.message);
         if (error.response) {
             console.error('Status:', error.response.status);
-            // Verifica se o erro é 508 e trata especificamente
             if (error.response.status === 508) {
                 res.status(508).send('Erro ao carregar o conteúdo do site externo: Loop Detectado. Por favor, verifique a configuração do proxy ou redirecionamentos.');
             } else {
                 res.status(error.response.status).send(`Erro ao carregar o conteúdo do site externo: ${error.response.statusText || 'Erro desconhecido'}`);
             }
         } else {
-            // Erro de rede ou outro erro interno
             res.status(500).send('Erro interno do servidor proxy.');
         }
     }
