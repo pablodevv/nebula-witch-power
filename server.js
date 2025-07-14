@@ -4,74 +4,99 @@ const express = require('express');
 const axios = require('axios');
 const cheerio = require('cheerio');
 const path = require('path');
-const { URL } = require('url'); // Módulo nativo para manipulação de URLs
+const { URL } = require('url');
+const fileUpload = require('express-fileupload'); // NOVO: Importa o express-fileupload
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 // URLs de destino
 const MAIN_TARGET_URL = 'https://appnebula.co';
-const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com'; // O subdomínio da API da mão
+const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
 
-// --- Configurações para Modificação de Conteúdo ---
+// Configurações para Modificação de Conteúdo
 const USD_TO_BRL_RATE = 5.00;
 const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g;
 
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Remove ou desabilita express.json() e express.urlencoded() para não interferir com fileUpload
+// app.use(express.json());
+// app.use(express.urlencoded({ extended: true }));
 
-// --- Middleware Principal do Proxy Reverso ---
+// NOVO: Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
+app.use(fileUpload({
+    limits: { fileSize: 50 * 1024 * 1024 }, // Limite de 50MB, ajuste se necessário
+    createParentPath: true, // Cria pastas se necessário
+    uriDecodeFileNames: true, // Decodifica nomes de arquivo
+    preserveExtension: true // Preserva extensão de arquivos
+}));
+
+// Middleware Principal do Proxy Reverso
 app.use(async (req, res) => {
-    let targetDomain = MAIN_TARGET_URL; // Domínio padrão de destino
-    let requestPath = req.url; // Caminho da requisição no seu proxy
+    let targetDomain = MAIN_TARGET_URL;
+    let requestPath = req.url;
 
     // Lógica para Proxeamento do Subdomínio de Leitura (Mão)
-    // Se a requisição recebida no seu proxy começa com '/reading/'
     if (req.url.startsWith('/reading/')) {
         targetDomain = READING_SUBDOMAIN_TARGET;
-        // Remove o prefixo '/reading' para que a URL original vá para o destino
         requestPath = req.url.substring('/reading'.length);
-        if (requestPath === '') requestPath = '/'; // Garante que /reading/ vá para a raiz do subdomínio
+        if (requestPath === '') requestPath = '/';
         console.log(`[READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
-        // Logar cabeçalhos e parte do corpo para depuração
         console.log(`[READING PROXY] Método: ${req.method}`);
-        console.log(`[READING PROXY] Headers: ${JSON.stringify(req.headers)}`);
-        // Se for POST/PUT, tente logar uma parte do corpo para ver se está chegando
-        if (req.method === 'POST' || req.method === 'PUT' && req.body) {
-            // Cuidado ao logar todo o corpo de uma imagem, pode ser muito grande
-            // Apenas loga o tipo ou primeiros 100 caracteres se for string/buffer
-            if (typeof req.body === 'object' && req.body instanceof Buffer) {
-                console.log(`[READING PROXY] Corpo recebido: Buffer de ${req.body.length} bytes`);
-            } else if (typeof req.body === 'string') {
-                console.log(`[READING PROXY] Corpo recebido (parte): ${req.body.substring(0, 100)}`);
-            } else {
-                console.log(`[READING PROXY] Corpo recebido (tipo): ${typeof req.body}`);
+        console.log(`[READING PROXY] Headers originais: ${JSON.stringify(req.headers)}`);
+
+        // NOVO: Logar o conteúdo de req.files se for upload (multipart/form-data)
+        if (req.files && Object.keys(req.files).length > 0) {
+            console.log(`[READING PROXY] Arquivos recebidos: ${JSON.stringify(Object.keys(req.files))}`);
+            const photoFile = req.files.photo; // 'photo' é o nome do campo do formulário
+            if (photoFile) {
+                console.log(`[READING PROXY] Arquivo 'photo': name=${photoFile.name}, size=${photoFile.size}, mimetype=${photoFile.mimetype}`);
             }
+        } else {
+            console.log(`[READING PROXY] Corpo recebido (tipo): ${typeof req.body}`);
         }
-    } 
-    // Outras requisições (assets, funil, raiz) vão para o domínio principal (MAIN_TARGET_URL)
-    else {
+    } else {
         console.log(`[MAIN PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
     }
-    
+
     const targetUrl = `${targetDomain}${requestPath}`;
 
     try {
+        // Prepara os dados para a requisição do Axios
+        let requestData = req.body; // Para requisições JSON ou form-urlencoded (se reativados ou outros middlewares)
+        let requestHeaders = { ...req.headers }; // Copia todos os cabeçalhos do cliente
+
+        // Se for um upload de arquivo, o `express-fileupload` popula `req.files`
+        if (req.files && Object.keys(req.files).length > 0) {
+            const photoFile = req.files.photo; // Assume que o campo da imagem é 'photo'
+
+            if (photoFile) {
+                // Reconstroi o FormData para enviar via Axios
+                // IMPORTANTE: Remove o Content-Type original para Axios gerar o seu próprio boundary
+                delete requestHeaders['content-type'];
+                delete requestHeaders['content-length']; // O Axios calculará o novo Content-Length
+
+                const formData = new require('form-data')();
+                formData.append('photo', photoFile.data, {
+                    filename: photoFile.name,
+                    contentType: photoFile.mimetype,
+                });
+                requestData = formData;
+                // Axios cuidará dos cabeçalhos do FormData (incluindo o Content-Type com o boundary correto)
+                // Mas precisamos garantir que todos os cabeçalhos do formData sejam passados
+                requestHeaders = { ...requestHeaders, ...formData.getHeaders() };
+            }
+        }
+
         const response = await axios({
             method: req.method,
             url: targetUrl,
             headers: {
                 'User-Agent': req.headers['user-agent'],
-                'Accept-Encoding': 'identity', // Crucial para manipular o conteúdo
+                'Accept-Encoding': 'identity', 
                 'Accept': req.headers['accept'],
-                // Removido ou comentado: 'Host': req.headers['host'], // É melhor deixar o Axios/Node.js definir o Host
-                'Cookie': req.headers['cookie'] || ''
+                ...requestHeaders // Passa os cabeçalhos, incluindo os do FormData se aplicável
             },
-            // IMPORTANTE para uploads: Axios com express.json() / express.urlencoded()
-            // geralmente lida bem com FormData se os headers Content-Type estiverem corretos.
-            // Se for raw binary, pode ser necessário passar req como stream.
-            // Para `multipart/form-data` enviado pelo navegador, `req.body` do Express já é parsed.
-            data: req.method === 'POST' || req.method === 'PUT' ? req.body : undefined,
+            data: requestData, // Envia os dados preparados (Buffer do arquivo ou req.body normal)
             responseType: 'arraybuffer',
             maxRedirects: 0,
             validateStatus: function (status) {
@@ -79,7 +104,7 @@ app.use(async (req, res) => {
             },
         });
 
-        // --- Lógica de Interceptação de Redirecionamento (Status 3xx) ---
+        // Lógica de Interceptação de Redirecionamento (Status 3xx)
         if (response.status >= 300 && response.status < 400) {
             const redirectLocation = response.headers.location;
             if (redirectLocation) {
@@ -104,7 +129,7 @@ app.use(async (req, res) => {
             }
         }
 
-        // --- Repassa Cabeçalhos da Resposta do Destino para o Cliente ---
+        // Repassa Cabeçalhos da Resposta do Destino para o Cliente
         Object.keys(response.headers).forEach(header => {
             if (!['transfer-encoding', 'content-encoding', 'content-length', 'set-cookie'].includes(header.toLowerCase())) {
                 res.setHeader(header, response.headers[header]);
@@ -121,13 +146,13 @@ app.use(async (req, res) => {
             res.setHeader('Set-Cookie', modifiedCookies);
         }
 
-        // --- Lógica de Modificação de Conteúdo (Apenas para HTML) ---
+        // Lógica de Modificação de Conteúdo (Apenas para HTML)
         const contentType = response.headers['content-type'] || '';
         if (contentType.includes('text/html')) {
             let html = response.data.toString('utf8');
             const $ = cheerio.load(html);
 
-            // 1. Reescrever todas as URLs relativas e absolutas
+            // Reescrever todas as URLs relativas e absolutas
             $('[href], [src], [action]').each((i, el) => {
                 const element = $(el);
                 let attrName = '';
@@ -152,15 +177,13 @@ app.use(async (req, res) => {
                 }
             });
 
-            // NOVO: Script para reescrever URLs de API dinâmicas no JavaScript
-            // Injeta este script no HEAD para que ele execute antes de outros scripts.
+            // Script para reescrever URLs de API dinâmicas no JavaScript
             $('head').prepend(`
                 <script>
                     (function() {
                         const readingSubdomainTarget = '${READING_SUBDOMAIN_TARGET}';
                         const proxyPrefix = '/reading';
 
-                        // Sobrescreve window.fetch
                         const originalFetch = window.fetch;
                         window.fetch = function(input, init) {
                             let url = input;
@@ -168,7 +191,6 @@ app.use(async (req, res) => {
                                 url = input.replace(readingSubdomainTarget, proxyPrefix);
                                 console.log('PROXY SHIM: REWRITE FETCH URL:', input, '->', url);
                             } else if (input instanceof Request && input.url.startsWith(readingSubdomainTarget)) {
-                                // Se for um objeto Request, cria um novo Request com a URL modificada
                                 url = new Request(input.url.replace(readingSubdomainTarget, proxyPrefix), {
                                     method: input.method,
                                     headers: input.headers,
@@ -186,7 +208,6 @@ app.use(async (req, res) => {
                             return originalFetch.call(this, url, init);
                         };
 
-                        // Sobrescreve XMLHttpRequest.prototype.open
                         const originalXHRopen = XMLHttpRequest.prototype.open;
                         XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
                             let modifiedUrl = url;
@@ -200,7 +221,7 @@ app.use(async (req, res) => {
                 </script>
             `);
 
-            // **REDIRECIONAMENTO FRONTAL (CLIENT-SIDE) PARA /pt/witch-power/email**
+            // REDIRECIONAMENTO FRONTAL (CLIENT-SIDE) PARA /pt/witch-power/email
             if (req.url.includes('/pt/witch-power/email')) {
                 console.log('Detectada slug /email no frontend. Injetando script de redirecionamento.');
                 $('head').append(`
@@ -210,7 +231,7 @@ app.use(async (req, res) => {
                 `);
             }
 
-            // **MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialChoice**
+            // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialChoice
             if (req.url.includes('/pt/witch-power/trialChoice')) {
                 console.log('Modificando conteúdo para /trialChoice (preços e textos).');
                 $('body').html(function(i, originalHtml) {
@@ -224,7 +245,7 @@ app.use(async (req, res) => {
                 $('p:contains("Selecione sua opção de teste")').text('Agora com preços adaptados para o Brasil!');
             }
 
-            // **MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialPaymentancestral**
+            // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialPaymentancestral
             if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
                 console.log('Modificando conteúdo para /trialPaymentancestral (preços e links de botões).');
                 $('body').html(function(i, originalHtml) {
