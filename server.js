@@ -1,76 +1,132 @@
 // server.js
 
-// Importa os módulos necessários
 const express = require('express');
 const axios = require('axios');
-const cheerio = require('cheerio'); // Para manipular o HTML
-const path = require('path'); // Módulo nativo do Node.js para lidar com caminhos de arquivo
+const cheerio = require('cheerio');
+const path = require('path');
 
-// Cria uma instância do aplicativo Express
 const app = express();
-// Define a porta do servidor. Usa a porta do ambiente (para deploy) ou 3000 por padrão (para desenvolvimento local)
 const PORT = process.env.PORT || 3000;
-// URL base do site que será "clonado" via proxy
-const TARGET_BASE_URL = 'https://appnebula.co';
 
-// --- Configurações para Modificação de Conteúdo ---
-// Taxa de câmbio para converter USD para BRL (você pode ajustar este valor)
+// Mapeamento de domínios originais para URLs base que nosso proxy vai lidar
+// Isso é crucial para proxyficar subdomínios como 'reading.nebulahoroscope.com'
+const PROXY_TARGETS = {
+    // Principal site
+    '/pt/witch-power': 'https://appnebula.co',
+    // API de reconhecimento de mão
+    '/api/v1/palmistry': 'https://reading.nebulahoroscope.com',
+    // Outros serviços que você listou e que podem precisar de proxy
+    // Importante: estes caminhos proxyPathPrefix devem ser únicos e não devem conflitar com rotas do site principal.
+    // Adaptei alguns prefixos para garantir isso.
+    '/clarity-collect': 'https://q.clarity.ms', // Renomeado para evitar conflitos com '/collect'
+    '/web-analytics-proxy': 'https://web-analytics-proxy.obrio.net',
+    '/sentry-envelope': 'https://sentry.obrio.net', // Renomeado
+    '/zendesk-events': 'https://osupporto-help.zendesk.com', // Renomeado
+    '/tempo-traces': 'https://prod-tempo-web.nebulahoroscope.com', // Renomeado
+    '/asknebula-logs': 'https://logs.asknebula.com', // Renomeado
+    '/growthbook-sdk': 'https://growthbook.nebulahoroscope.com', // Renomeado
+    // Este `cdn-cgi` parece ser do Cloudflare do Render. Pode ou não precisar de proxy.
+    // Se der erro, adicione um mapeamento aqui. Por enquanto, pode ser ignorado ou testado sem.
+    // '/cdn-cgi/rum': 'https://onebulaapp-witch-power.onrender.com', 
+};
+
+// Configurações para Modificação de Conteúdo
 const USD_TO_BRL_RATE = 5.00;
-// Expressão regular para encontrar valores em dólar como $X.XX ou $X
 const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g;
 
-// Middleware para parsear o corpo das requisições (se houver POSTs, PUTs, etc.)
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// Middleware para parsear o corpo das requisições
+// **CRÍTICO para multipart/form-data e outros tipos de upload:**
+// Não usaremos `express.json()` ou `express.urlencoded()` diretamente para *todas* as requisições
+// para não interferir com `multipart/form-data`.
+// Em vez disso, usaremos um middleware customizado para obter o raw body se necessário.
+app.use(async (req, res, next) => {
+    // Se o Content-Type for multipart/form-data ou imagem, pegamos o buffer bruto
+    const contentType = req.headers['content-type'];
+    if (contentType && (contentType.includes('multipart/form-data') || contentType.includes('image/'))) {
+        let rawBody = [];
+        req.on('data', chunk => {
+            rawBody.push(chunk);
+        });
+        req.on('end', () => {
+            req.rawBody = Buffer.concat(rawBody);
+            next();
+        });
+    } else {
+        // Para outros Content-Types (JSON, URL-encoded), usamos os parsers do Express
+        // Ou simplesmente passamos o controle para o próximo middleware se não for POST/PUT.
+        // Se for JSON, o 'express.json()' vai parsear.
+        // Se for URL-encoded, 'express.urlencoded()' vai parsear.
+        express.json({ limit: '50mb' })(req, res, () => {
+            express.urlencoded({ extended: true, limit: '50mb' })(req, res, next);
+        });
+    }
+});
+
 
 // --- Middleware Principal do Proxy Reverso ---
-// Este middleware captura TODAS as requisições que chegam ao seu servidor
 app.use(async (req, res) => {
-    // Constrói a URL de destino no site original (appnebula.co)
-    // req.url contém o caminho completo da requisição (ex: /pt/witch-power/prelanding)
-    const targetPath = `${TARGET_BASE_URL}${req.url}`;
-    console.log(`Requisição recebida: ${req.url} -> Proxy para: ${targetPath}`);
+    let targetBaseUrl = '';
+    let requestPath = req.url;
+
+    // Tenta encontrar qual TARGET_BASE_URL corresponde ao req.url
+    for (const [proxyPathPrefix, targetUrl] of Object.entries(PROXY_TARGETS)) {
+        if (req.url.startsWith(proxyPathPrefix)) {
+            targetBaseUrl = targetUrl;
+            // Ajusta o requestPath para ser relativo ao targetBaseUrl, removendo o prefixo do proxy
+            requestPath = req.url.substring(proxyPathPrefix.length);
+            break;
+        }
+    }
+
+    if (!targetBaseUrl) {
+        // Se a URL não corresponder a nenhum dos PROXY_TARGETS, assume o appnebula.co principal
+        targetBaseUrl = 'https://appnebula.co';
+    }
+
+    const targetUrl = `${targetBaseUrl}${requestPath}`;
+    console.log(`Requisição recebida: ${req.url} -> Proxy para: ${targetUrl}`);
 
     try {
-        // Faz a requisição HTTP para o site de destino (appnebula.co)
-        const response = await axios({
-            method: req.method, // Usa o mesmo método da requisição original (GET, POST, etc.)
-            url: targetPath, // A URL completa para o site de destino
+        const axiosConfig = {
+            method: req.method,
+            url: targetUrl,
             headers: {
-                // Passa alguns cabeçalhos importantes do cliente para o servidor de destino
-                'User-Agent': req.headers['user-agent'], // Identifica o navegador do usuário
-                'Accept-Encoding': 'identity', // Importante para evitar compressão (gzip) que pode dificultar a modificação do conteúdo
-                'Accept': req.headers['accept'], // Tipos de conteúdo aceitos pelo cliente
-                'Cookie': req.headers['cookie'] || '' // Passa os cookies do cliente para o site de destino
+                'User-Agent': req.headers['user-agent'],
+                // Passa o Content-Type original, CRÍTICO para multipart/form-data
+                'Content-Type': req.headers['content-type'] || undefined,
+                'Accept-Encoding': 'identity', // Evita compressão que dificulta a manipulação
+                'Accept': req.headers['accept'],
+                'Cookie': req.headers['cookie'] || '',
+                // CRÍTICO: Reescreve o cabeçalho 'Origin' e 'Referer' para o domínio de destino
+                // Isso pode enganar as verificações de CORS e Referer do servidor original.
+                'Origin': targetBaseUrl,
+                'Referer': targetUrl,
+                // Remova 'Host' para evitar problemas com Axios reescrevendo-o
+                // delete req.headers['host']; // Isso não é necessário se você está usando axios
             },
-            // Se a requisição original tiver um corpo (ex: POST), passa-o para o destino
-            data: req.method === 'POST' || req.method === 'PUT' ? req.body : undefined,
-            responseType: 'arraybuffer', // Recebe a resposta como um buffer para lidar com todos os tipos de arquivo (HTML, CSS, JS, imagens)
-            maxRedirects: 0, // Não seguir redirecionamentos automaticamente; vamos lidar com eles manualmente
+            // Se tivermos o rawBody (para uploads), usamos ele. Senão, usamos req.body (para JSON/URL-encoded)
+            data: req.rawBody || req.body,
+            responseType: 'arraybuffer',
+            maxRedirects: 0,
             validateStatus: function (status) {
-                // Aceita status 2xx (sucesso) e 3xx (redirecionamento) para que possamos processá-los
                 return status >= 200 && status < 400;
             },
-        });
+        };
+
+        const response = await axios(axiosConfig);
 
         // --- Lógica de Interceptação de Redirecionamento (Status 3xx) ---
-        // Se o servidor de destino (appnebula.co) enviar um redirecionamento
         if (response.status >= 300 && response.status < 400) {
-            const redirectLocation = response.headers.location; // Obtém a URL para a qual o destino está redirecionando
+            const redirectLocation = response.headers.location;
             if (redirectLocation) {
-                // Resolve a URL de redirecionamento completa, caso seja relativa
-                const fullRedirectUrl = new URL(redirectLocation, TARGET_BASE_URL).href;
+                const fullRedirectUrl = new URL(redirectLocation, targetBaseUrl).href;
 
-                // **REDIRECIONAMENTO ESPECÍFICO: /pt/witch-power/email para /pt/witch-power/onboarding**
                 if (fullRedirectUrl.includes('/pt/witch-power/email')) {
                     console.log('Interceptando redirecionamento para /email. Redirecionando para /onboarding.');
-                    // Redireciona o navegador do usuário para a versão proxy de /onboarding
                     return res.redirect(302, '/pt/witch-power/onboarding');
                 }
 
-                // Se não for o redirecionamento específico, reescreve a URL de redirecionamento
-                // para que ela aponte para o nosso próprio proxy
-                const proxiedRedirectPath = fullRedirectUrl.replace(TARGET_BASE_URL, '');
+                const proxiedRedirectPath = fullRedirectUrl.replace(targetBaseUrl, '');
                 console.log(`Redirecionamento do destino: ${fullRedirectUrl} -> Reescrevendo para: ${proxiedRedirectPath}`);
                 return res.redirect(response.status, proxiedRedirectPath);
             }
@@ -78,7 +134,6 @@ app.use(async (req, res) => {
 
         // --- Repassa Cabeçalhos da Resposta do Destino para o Cliente ---
         Object.keys(response.headers).forEach(header => {
-            // Remove cabeçalhos que podem causar problemas após modificação ou proxy (ex: tamanho do conteúdo, tipo de codificação)
             if (!['transfer-encoding', 'content-encoding', 'content-length', 'set-cookie'].includes(header.toLowerCase())) {
                 res.setHeader(header, response.headers[header]);
             }
@@ -96,15 +151,12 @@ app.use(async (req, res) => {
             res.setHeader('Set-Cookie', modifiedCookies);
         }
 
-        // --- Lógica de Modificação de Conteúdo (Apenas para HTML) ---
         const contentType = response.headers['content-type'] || '';
         if (contentType.includes('text/html')) {
-            let html = response.data.toString('utf8'); // Converte o buffer de resposta para string HTML
+            let html = response.data.toString('utf8');
+            const $ = cheerio.load(html);
 
-            const $ = cheerio.load(html); // Carrega o HTML no Cheerio para manipulação
-
-            // 1. Reescrever todas as URLs relativas e absolutas que apontam para o TARGET_BASE_URL
-            // Isso é CRÍTICO para que CSS, JS, imagens, links e formulários funcionem através do seu proxy
+            // Reescrever URLs relativas e absolutas que apontam para os TARGET_BASE_URLs
             $('[href], [src], [action]').each((i, el) => {
                 const element = $(el);
                 let attrName = '';
@@ -119,37 +171,38 @@ app.use(async (req, res) => {
                 if (attrName) {
                     let originalUrl = element.attr(attrName);
                     if (originalUrl) {
-                        // Se a URL for absoluta e apontar para o site de destino, a tornamos relativa ao nosso proxy
-                        if (originalUrl.startsWith(TARGET_BASE_URL)) {
-                            element.attr(attrName, originalUrl.replace(TARGET_BASE_URL, ''));
+                        let replaced = false;
+                        for (const [proxyPathPrefix, targetUrl] of Object.entries(PROXY_TARGETS)) {
+                             // Se a URL original começa com o URL completo do destino, a reescrevemos
+                             if (originalUrl.startsWith(targetUrl)) {
+                                 // Ex: https://reading.nebulahoroscope.com/api/v1/palmistry/detect -> /api/v1/palmistry/detect
+                                 element.attr(attrName, proxyPathPrefix + originalUrl.substring(targetUrl.length));
+                                 replaced = true;
+                                 break;
+                             }
                         }
-                        // Se a URL for relativa (começa com /), ela já estará correta para o nosso root
-                        // Ex: /pt/witch-power/assets/image.png já funciona se o proxy está no root
-                        // Se o proxy estivesse em um subcaminho como /meu-proxy/, precisaríamos adicionar esse prefixo
-                        // Mas como estamos usando o root do seu domínio, não é necessário prefixar URLs relativas.
+                        // Se não foi substituída e é uma URL relativa que começa com '/', garantir que funcione do root
+                        if (!replaced && originalUrl.startsWith('/') && !originalUrl.startsWith('//')) {
+                            // Já está ok, pois nosso proxy está no root '/' do seu domínio.
+                            // Não precisa de prefixo adicional como `/meu-proxy${originalUrl}`.
+                        }
                     }
                 }
             });
 
-            // **REDIRECIONAMENTO FRONTAL (CLIENT-SIDE) PARA /pt/witch-power/email**
-            // Este é um fallback caso o redirecionamento do backend não seja acionado (ex: se o site de destino usar roteamento client-side)
+            // Redirecionamento Frontend para /email (fallback)
             if (req.url.includes('/pt/witch-power/email')) {
                 console.log('Detectada slug /email no frontend. Injetando script de redirecionamento.');
                 $('head').append(`
                     <script>
-                        // Este script é injetado no HTML e executa no navegador do cliente
-                        // Ele redireciona para a página de onboarding no seu proxy
                         window.location.replace('/pt/witch-power/onboarding');
                     </script>
                 `);
             }
 
-            // **MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialChoice**
+            // Modificações específicas para /trialChoice
             if (req.url.includes('/pt/witch-power/trialChoice')) {
                 console.log('Modificando conteúdo para /trialChoice (preços e textos).');
-                // Substitui valores em dólar por reais em todo o corpo do HTML
-                // Isso é uma substituição genérica de texto. Pode ser necessário refinar com seletores CSS mais específicos
-                // se você quiser alterar apenas textos dentro de elementos específicos.
                 $('body').html(function(i, originalHtml) {
                     return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
                         const usdValue = parseFloat(p1);
@@ -157,17 +210,13 @@ app.use(async (req, res) => {
                         return `R$ ${brlValue}`;
                     });
                 });
-
-                // Exemplo: Modificar um texto de título específico (ajuste o seletor conforme o HTML real)
-                $('h2:contains("Trial Choice")').text('Escolha sua Prova Gratuita (Preços em Reais)');
-                // Exemplo: Modificar um parágrafo específico
+                $('h2:contains("Trial Choice")').text('Escolha sua Prova Gratuita (Modificado)');
                 $('p:contains("Selecione sua opção de teste")').text('Agora com preços adaptados para o Brasil!');
             }
 
-            // **MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialPaymentancestral**
+            // Modificações específicas para /trialPaymentancestral
             if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
                 console.log('Modificando conteúdo para /trialPaymentancestral (preços e links de botões).');
-                // Substitui valores em dólar por reais em todo o corpo do HTML
                 $('body').html(function(i, originalHtml) {
                     return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
                         const usdValue = parseFloat(p1);
@@ -175,41 +224,28 @@ app.use(async (req, res) => {
                         return `R$ ${brlValue}`;
                     });
                 });
-
-                // Exemplo: Modificar links de botões específicos
-                // Você precisará inspecionar o HTML real para encontrar os seletores corretos (IDs, classes, ou texto)
-                // Exemplo 1: Botão com ID
                 $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
-                // Exemplo 2: Botão com classe
                 $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
-                // Exemplo 3: Botão que contém um texto específico (menos robusto se o texto mudar)
                 $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
-
-                // Exemplo: Modificar um título ou descrição
                 $('h1:contains("Trial Payment Ancestral")').text('Pagamento da Prova Ancestral (Preços e Links Atualizados)');
             }
 
-            // Envia o HTML modificado de volta para o navegador do cliente
             res.send($.html());
         } else {
-            // Para outros tipos de arquivo (CSS, JS, imagens, etc.), apenas repassa o buffer de dados
             res.status(response.status).send(response.data);
         }
 
     } catch (error) {
-        console.error('Erro no proxy:', error.message);
+        console.error('Erro no proxy para', req.url, ':', error.message);
         if (error.response) {
-            console.error('Status:', error.response.status);
-            // Tenta repassar o status code do erro ou um 500 para o cliente
-            res.status(error.response.status).send(`Erro ao carregar o conteúdo do site externo: ${error.response.statusText || 'Erro desconhecido'}`);
+            console.error('Status:', error.response.status, 'Headers:', error.response.headers, 'Data:', error.response.data ? error.response.data.toString('utf8').substring(0, 500) : '');
+            res.status(error.response.status).send(`Erro ao carregar o conteúdo do site externo: ${error.response.statusText || 'Erro desconhecido'} (Status: ${error.response.status})`);
         } else {
-            // Erro de rede ou outro erro interno
-            res.status(500).send('Erro interno do servidor proxy.');
+            res.status(500).send('Erro interno do servidor proxy ou de conexão com o destino.');
         }
     }
 });
 
-// Inicia o servidor Express na porta definida
 app.listen(PORT, () => {
     console.log(`Servidor proxy rodando em http://localhost:${PORT}`);
     console.log(`Acesse o site "clonado" em http://localhost:${PORT}/pt/witch-power/prelanding`);
