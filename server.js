@@ -222,26 +222,48 @@ app.use(async (req, res) => {
             `);
 
             // ---
-            // NOVO E MAIS ROBUSTO REDIRECIONAMENTO CLIENT-SIDE
-            // Este script será injetado em TODAS as páginas HTML
+            // REDIRECIONAMENTO CLIENT-SIDE MAIS AGRESSIVO PARA /pt/witch-power/email
+            // Este script será injetado em TODAS as páginas HTML para forçar o redirecionamento
             $('head').append(`
                 <script>
+                    console.log('CLIENT-SIDE REDIRECT SCRIPT: Initializing.');
+
+                    // Variável para armazenar o ID do intervalo, permitindo limpá-lo
+                    let redirectCheckInterval;
+
                     function handleEmailRedirect() {
-                        // Verifica se a URL atual começa com o caminho da página de e-mail
-                        if (window.location.pathname.startsWith('/pt/witch-power/email')) {
-                            console.log('CLIENT-SIDE REDIRECT: URL /pt/witch-power/email detectada. Redirecionando para /pt/witch-power/onboarding');
+                        const currentPath = window.location.pathname;
+                        // Use startsWith para pegar /email e /email?param=value
+                        if (currentPath.startsWith('/pt/witch-power/email')) {
+                            console.log('CLIENT-SIDE REDIRECT: URL /pt/witch-power/email detectada. Forçando redirecionamento para /pt/witch-power/onboarding');
+                            // Limpa o intervalo imediatamente para evitar múltiplos redirecionamentos
+                            if (redirectCheckInterval) {
+                                clearInterval(redirectCheckInterval);
+                            }
                             window.location.replace('/pt/witch-power/onboarding'); // Usa replace para não deixar no histórico
                         }
                     }
 
-                    // 1. Executa no carregamento inicial da página (para quando há uma requisição HTTP direta)
+                    // 1. Executa no carregamento inicial da página (para quando há uma requisição HTTP direta ou client-side inicial)
                     document.addEventListener('DOMContentLoaded', handleEmailRedirect);
 
                     // 2. Monitora mudanças na história do navegador (para navegações via SPA - pushState/replaceState)
                     window.addEventListener('popstate', handleEmailRedirect);
 
-                    // Opcional: Um pequeno atraso para capturar transições muito rápidas de SPAs
-                    // setTimeout(handleEmailRedirect, 50);
+                    // 3. Adiciona um verificador periódico como uma camada extra de segurança
+                    // para capturar qualquer transição que os eventos não peguem
+                    redirectCheckInterval = setInterval(handleEmailRedirect, 100); // Verifica a cada 100ms
+
+                    // Limpa o intervalo se a página for descarregada para evitar vazamento de memória
+                    window.addEventListener('beforeunload', () => {
+                        if (redirectCheckInterval) {
+                            clearInterval(redirectCheckInterval);
+                        }
+                    });
+
+                    // Tenta executar imediatamente também para casos onde o script é injetado muito cedo
+                    handleEmailRedirect();
+
                 </script>
             `);
             // ---
