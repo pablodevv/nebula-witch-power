@@ -1,54 +1,48 @@
 // server.js
 
-// Importa os módulos necessários
 const express = require('express');
 const axios = require('axios');
-const cheerio = require('cheerio'); // Para manipular o HTML
-const path = require('path'); // Módulo nativo do Node.js para lidar com caminhos de arquivo
+const cheerio = require('cheerio');
+const path = require('path');
+const { URL } = require('url'); // Módulo nativo para manipulação de URLs
 
-// Cria uma instância do aplicativo Express
 const app = express();
-// Define a porta do servidor. Usa a porta do ambiente (para deploy no Render) ou 10000 por padrão (conforme seus logs do Render)
-// Se você está testando localmente, pode usar 3000 ou 10000. Para o Render, process.env.PORT é o essencial.
 const PORT = process.env.PORT || 10000;
 
-// URL base do site que será "clonado" via proxy
-const TARGET_BASE_URL = 'https://appnebula.co';
-// Nova URL de destino para a API de leitura de mão
-const API_PALMISTRY_URL = 'https://reading.nebulahoroscope.com';
+// URLs de destino
+const MAIN_TARGET_URL = 'https://appnebula.co';
+const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com'; // O subdomínio da API da mão
 
 // --- Configurações para Modificação de Conteúdo ---
-// Taxa de câmbio para converter USD para BRL (você pode ajustar este valor)
 const USD_TO_BRL_RATE = 5.00;
-// Expressão regular para encontrar valores em dólar como $X.XX ou $X
 const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g;
 
-// Middleware para parsear o corpo das requisições (se houver POSTs, PUTs, etc.)
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // --- Middleware Principal do Proxy Reverso ---
-// Este middleware captura TODAS as requisições que chegam ao seu servidor
 app.use(async (req, res) => {
-    let targetDomain = TARGET_BASE_URL; // Domínio padrão de destino
+    let targetDomain = MAIN_TARGET_URL; // Domínio padrão de destino
     let requestPath = req.url; // Caminho da requisição no seu proxy
 
-    // 1. Lógica para Proxeamento do Subdomínio da API de Quiromancia
-    // Se a requisição recebida no seu proxy começa com '/api/'
-    // e essa requisição deveria ir para o subdomínio da API.
-    if (req.url.startsWith('/api/v1/palmistry/detect')) { // Ou apenas '/api/' se todas as APIs forem para lá
-        targetDomain = API_PALMISTRY_URL;
-        // O requestPath já é '/api/v1/palmistry/detect', então não precisa de pathRewrite aqui
-        console.log(`[API PROXY] Requisição API: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
-    } else {
-        // Se não for a API, mantém o domínio principal
-        console.log(`[GERAL PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
+    // NOVO: 1. Lógica para Proxeamento do Subdomínio de Leitura (Mão)
+    // Se a requisição recebida no seu proxy começa com '/reading/'
+    // (Este é um prefixo que você vai usar para sinalizar requisições para esse subdomínio)
+    if (req.url.startsWith('/reading/')) {
+        targetDomain = READING_SUBDOMAIN_TARGET;
+        // Remove o prefixo '/reading' para que a URL original vá para o destino
+        requestPath = req.url.substring('/reading'.length);
+        if (requestPath === '') requestPath = '/'; // Garante que /reading/ vá para a raiz do subdomínio
+        console.log(`[READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
+    } 
+    // 2. Outras requisições (assets, funil, raiz) vão para o domínio principal (MAIN_TARGET_URL)
+    else {
+        console.log(`[MAIN PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
     }
     
     const targetUrl = `${targetDomain}${requestPath}`;
 
     try {
-        // Faz a requisição HTTP para o site de destino (appnebula.co ou reading.nebulahoroscope.com)
         const response = await axios({
             method: req.method,
             url: targetUrl,
@@ -56,6 +50,9 @@ app.use(async (req, res) => {
                 'User-Agent': req.headers['user-agent'],
                 'Accept-Encoding': 'identity', // Crucial para manipular o conteúdo
                 'Accept': req.headers['accept'],
+                // Importante: Passar o Host original do cliente pode causar problemas de certificado no destino
+                // É melhor deixar o Axios/Node.js definir o Host para o targetDomain
+                // 'Host': req.headers['host'], // Removido ou comentado
                 'Cookie': req.headers['cookie'] || ''
             },
             data: req.method === 'POST' || req.method === 'PUT' ? req.body : undefined,
@@ -71,8 +68,9 @@ app.use(async (req, res) => {
             const redirectLocation = response.headers.location;
             if (redirectLocation) {
                 // Determine o domínio base para resolver o redirecionamento.
-                // Se o redirecionamento veio da API, resolve em relação à API_PALMISTRY_URL.
-                const redirectBase = req.url.startsWith('/api/') ? API_PALMISTRY_URL : TARGET_BASE_URL;
+                // Se o redirecionamento veio do subdomínio de leitura, resolve em relação a ele.
+                const redirectBase = targetDomain; // Usa o domínio que foi o target original da requisição
+
                 const fullRedirectUrl = new URL(redirectLocation, redirectBase).href;
 
                 // **REDIRECIONAMENTO ESPECÍFICO: /pt/witch-power/email para /pt/witch-power/onboarding**
@@ -81,10 +79,16 @@ app.use(async (req, res) => {
                     return res.redirect(302, '/pt/witch-power/onboarding');
                 }
 
-                // Se não for o redirecionamento específico, reescreve a URL de redirecionamento
-                const proxiedRedirectPath = fullRedirectUrl
-                    .replace(TARGET_BASE_URL, '') // Remove o domínio principal
-                    .replace(API_PALMISTRY_URL, ''); // Remove o domínio da API
+                // Reescreve a URL de redirecionamento para apontar para o nosso proxy
+                let proxiedRedirectPath = fullRedirectUrl;
+                // Substitui o domínio principal ou o subdomínio pelo prefixo do proxy
+                if (proxiedRedirectPath.startsWith(MAIN_TARGET_URL)) {
+                    proxiedRedirectPath = proxiedRedirectPath.replace(MAIN_TARGET_URL, '');
+                } else if (proxiedRedirectPath.startsWith(READING_SUBDOMAIN_TARGET)) {
+                    proxiedRedirectPath = proxiedRedirectPath.replace(READING_SUBDOMAIN_TARGET, '/reading'); // Adiciona o prefixo /reading/
+                }
+                 // Se for apenas '/', ou seja, raiz do proxy, garante que não fique vazio
+                if (proxiedRedirectPath === '') proxiedRedirectPath = '/';
 
                 console.log(`Redirecionamento do destino: ${fullRedirectUrl} -> Reescrevendo para: ${proxiedRedirectPath}`);
                 return res.redirect(response.status, proxiedRedirectPath);
@@ -105,7 +109,6 @@ app.use(async (req, res) => {
             const modifiedCookies = cookies.map(cookie => {
                 // Remove o atributo 'Domain' para que o navegador defina o domínio atual (o seu)
                 // E ajusta o 'Path' para o caminho base do seu proxy, se aplicável
-                // Usar req.path ou '/' pode ser mais seguro aqui, dependendo da necessidade
                 return cookie.replace(/Domain=[^;]+/, '').replace(/; Path=\//, `; Path=${req.baseUrl || '/'}`);
             });
             res.setHeader('Set-Cookie', modifiedCookies);
@@ -117,8 +120,7 @@ app.use(async (req, res) => {
             let html = response.data.toString('utf8');
             const $ = cheerio.load(html);
 
-            // 1. Reescrever todas as URLs relativas e absolutas que apontam para o TARGET_BASE_URL
-            // Isso é CRÍTICO para que CSS, JS, imagens, links e formulários funcionem através do seu proxy
+            // 1. Reescrever todas as URLs relativas e absolutas
             $('[href], [src], [action]').each((i, el) => {
                 const element = $(el);
                 let attrName = '';
@@ -133,15 +135,18 @@ app.use(async (req, res) => {
                 if (attrName) {
                     let originalUrl = element.attr(attrName);
                     if (originalUrl) {
-                        // Se a URL for absoluta e apontar para o site de destino (appnebula.co), a tornamos relativa ao nosso proxy
-                        if (originalUrl.startsWith(TARGET_BASE_URL)) {
-                            element.attr(attrName, originalUrl.replace(TARGET_BASE_URL, ''));
+                        // Se a URL for absoluta e apontar para o site de destino (appnebula.co)
+                        if (originalUrl.startsWith(MAIN_TARGET_URL)) {
+                            element.attr(attrName, originalUrl.replace(MAIN_TARGET_URL, ''));
                         }
-                        // Se a URL for absoluta e apontar para o subdomínio da API (reading.nebulahoroscope.com), a tornamos relativa ao nosso proxy
-                        else if (originalUrl.startsWith(API_PALMISTRY_URL)) {
-                            element.attr(attrName, originalUrl.replace(API_PALMISTRY_URL, ''));
+                        // NOVO: Se a URL for absoluta e apontar para o subdomínio da API (reading.nebulahoroscope.com)
+                        else if (originalUrl.startsWith(READING_SUBDOMAIN_TARGET)) {
+                            element.attr(attrName, originalUrl.replace(READING_SUBDOMAIN_TARGET, '/reading'));
                         }
                         // URLs relativas (ex: /_next/static/...) já funcionam, pois o proxy está no root.
+                        // Mas se houver URLs como //sub.domain.com/path, elas podem precisar de tratamento,
+                        // embora 'changeOrigin: true' no http-proxy-middleware (se estivéssemos usando) ajudaria.
+                        // Com a sua abordagem, a URL precisa ser reescrita explicitamente.
                     }
                 }
             });
@@ -206,7 +211,6 @@ app.use(async (req, res) => {
     }
 });
 
-// Inicia o servidor Express na porta definida
 app.listen(PORT, () => {
     console.log(`Servidor proxy rodando em http://localhost:${PORT}`);
     console.log(`Acesse o site "clonado" em http://localhost:${PORT}/pt/witch-power/prelanding`);
