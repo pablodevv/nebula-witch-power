@@ -1,252 +1,162 @@
-// server.js
 
 const express = require('express');
-const axios = require('axios');
-const cheerio = require('cheerio');
-const path = require('path');
+const { createProxyMiddleware } = require('http-proxy-middleware');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Mapeamento de domínios originais para URLs base que nosso proxy vai lidar
-// Isso é crucial para proxyficar subdomínios como 'reading.nebulahoroscope.com'
-const PROXY_TARGETS = {
-    // Principal site
-    '/pt/witch-power': 'https://appnebula.co',
-    // API de reconhecimento de mão
-    '/api/v1/palmistry': 'https://reading.nebulahoroscope.com',
-    // Outros serviços que você listou e que podem precisar de proxy
-    // Importante: estes caminhos proxyPathPrefix devem ser únicos e não devem conflitar com rotas do site principal.
-    // Adaptei alguns prefixos para garantir isso.
-    '/clarity-collect': 'https://q.clarity.ms', // Renomeado para evitar conflitos com '/collect'
-    '/web-analytics-proxy': 'https://web-analytics-proxy.obrio.net',
-    '/sentry-envelope': 'https://sentry.obrio.net', // Renomeado
-    '/zendesk-events': 'https://osupporto-help.zendesk.com', // Renomeado
-    '/tempo-traces': 'https://prod-tempo-web.nebulahoroscope.com', // Renomeado
-    '/asknebula-logs': 'https://logs.asknebula.com', // Renomeado
-    '/growthbook-sdk': 'https://growthbook.nebulahoroscope.com', // Renomeado
-    // Este `cdn-cgi` parece ser do Cloudflare do Render. Pode ou não precisar de proxy.
-    // Se der erro, adicione um mapeamento aqui. Por enquanto, pode ser ignorado ou testado sem.
-    // '/cdn-cgi/rum': 'https://onebulaapp-witch-power.onrender.com', 
+// URL base do seu site de destino (Next.js)
+const TARGET_URL = 'https://appnebula.co';
+
+// Configuração do proxy
+const proxyOptions = {
+  target: TARGET_URL,
+  changeOrigin: true, // Necessário para que o host de destino seja appnebula.co
+  secure: true, // Use HTTPS
+  ws: true, // Habilita suporte a WebSockets, se necessário
+  selfHandleResponse: true, // Permite manipular a resposta para reescrever URLs
+  // logs: true, // Habilita logs detalhados do proxy para depuração
+  
+  onProxyReq: (proxyReq, req, res) => {
+    // Adiciona o header 'Accept-Encoding' para garantir que as respostas sejam descompactadas pelo proxy
+    // Isso evita problemas com reescrita de URLs em conteúdo compactado
+    proxyReq.setHeader('Accept-Encoding', 'identity');
+
+    // Logs para depuração
+    console.log(`Requisição recebida: ${req.url} -> Proxy para: ${proxyReq.protocol}//${proxyReq.host}${proxyReq.path}`);
+  },
+
+  onProxyRes: (proxyRes, req, res) => {
+    // Se for uma requisição para a imagem de upload, manipulamos o redirecionamento
+    if (req.url.startsWith('/_next/image')) {
+      const redirectLocation = proxyRes.headers.location;
+      if (redirectLocation && redirectLocation.startsWith('https://appnebula.co/')) {
+        const newLocation = redirectLocation.replace('https://appnebula.co', '');
+        proxyRes.headers.location = newLocation;
+        console.log(`Redirecionamento do destino: ${redirectLocation} -> Reescrevendo para: ${newLocation}`);
+      }
+    }
+
+    // Capture a resposta para reescrever URLs no HTML ou CSS/JS
+    const originalEnd = res.end;
+    const chunks = [];
+
+    proxyRes.on('data', (chunk) => {
+      chunks.push(chunk);
+    });
+
+    proxyRes.on('end', () => {
+      const buffer = Buffer.concat(chunks);
+      let data = buffer.toString('utf8');
+
+      // Se o content-type for HTML, CSS ou JavaScript, tentamos reescrever as URLs
+      const contentType = proxyRes.headers['content-type'];
+
+      if (contentType && (contentType.includes('text/html') || contentType.includes('text/css') || contentType.includes('application/javascript'))) {
+        // Rewrite all occurrences of the target URL to the proxy URL
+        data = data.replace(new RegExp(TARGET_URL.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'), '');
+        
+        // Trata caminhos absolutos do Next.js que podem ser "/_next/..."
+        // Esta parte pode precisar de ajuste fino dependendo de como o Next.js renderiza os paths
+        data = data.replace(/\/pt\/witch-power\/\_next\/static/g, '/_next/static');
+      }
+
+      res.setHeader('Content-Length', Buffer.byteLength(data));
+      originalEnd.call(res, data);
+    });
+  },
+
+  onError: (err, req, res) => {
+    console.error(`Erro no proxy para ${req.url}: ${err.message}`);
+    // Se o erro for 404 e a resposta já tiver começado, não tente enviar um novo status.
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Something went wrong. And we are reporting a custom error message.');
+    }
+  },
 };
 
-// Configurações para Modificação de Conteúdo
-const USD_TO_BRL_RATE = 5.00;
-const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g;
+// Crie a instância do proxy
+const apiProxy = createProxyMiddleware(proxyOptions);
 
-// Middleware para parsear o corpo das requisições
-// **CRÍTICO para multipart/form-data e outros tipos de upload:**
-// Não usaremos `express.json()` ou `express.urlencoded()` diretamente para *todas* as requisições
-// para não interferir com `multipart/form-data`.
-// Em vez disso, usaremos um middleware customizado para obter o raw body se necessário.
-app.use(async (req, res, next) => {
-    // Se o Content-Type for multipart/form-data ou imagem, pegamos o buffer bruto
-    const contentType = req.headers['content-type'];
-    if (contentType && (contentType.includes('multipart/form-data') || contentType.includes('image/'))) {
-        let rawBody = [];
-        req.on('data', chunk => {
-            rawBody.push(chunk);
-        });
-        req.on('end', () => {
-            req.rawBody = Buffer.concat(rawBody);
-            next();
-        });
-    } else {
-        // Para outros Content-Types (JSON, URL-encoded), usamos os parsers do Express
-        // Ou simplesmente passamos o controle para o próximo middleware se não for POST/PUT.
-        // Se for JSON, o 'express.json()' vai parsear.
-        // Se for URL-encoded, 'express.urlencoded()' vai parsear.
-        express.json({ limit: '50mb' })(req, res, () => {
-            express.urlencoded({ extended: true, limit: '50mb' })(req, res, next);
-        });
-    }
-});
+// **Importante:** A ordem das rotas importa!
 
+// 1. Regra para todas as requisições que começam com /_next/static/
+// Esta regra deve vir antes das outras para garantir que os assets do Next.js sejam proxyficados corretamente.
+app.use('/_next/static/', apiProxy);
 
-// --- Middleware Principal do Proxy Reverso ---
-app.use(async (req, res) => {
-    let targetBaseUrl = '';
-    let requestPath = req.url;
+// 2. Regra para /pt/witch-power/prelanding e outras rotas dentro de /pt/witch-power/
+// Esta regra irá reescrever /pt/witch-power/X para /X no servidor de destino.
+app.use('/pt/witch-power/', createProxyMiddleware({
+    target: TARGET_URL,
+    changeOrigin: true,
+    secure: true,
+    ws: true,
+    selfHandleResponse: true,
+    onProxyReq: (proxyReq, req, res) => {
+        // Remove o prefixo '/pt/witch-power' da URL antes de enviar para o destino
+        let newPath = req.url.replace('/pt/witch-power', '');
+        if (newPath === '') newPath = '/'; // Se for '/pt/witch-power' vira '/'
+        
+        proxyReq.path = newPath;
+        proxyReq.setHeader('Accept-Encoding', 'identity'); // Descompactar para manipular
+        console.log(`Requisição recebida: ${req.url} -> Proxy para: ${proxyReq.protocol}//${proxyReq.host}${proxyReq.path}`);
+    },
+    onProxyRes: (proxyRes, req, res) => {
+        const originalEnd = res.end;
+        const chunks = [];
 
-    // Tenta encontrar qual TARGET_BASE_URL corresponde ao req.url
-    for (const [proxyPathPrefix, targetUrl] of Object.entries(PROXY_TARGETS)) {
-        if (req.url.startsWith(proxyPathPrefix)) {
-            targetBaseUrl = targetUrl;
-            // Ajusta o requestPath para ser relativo ao targetBaseUrl, removendo o prefixo do proxy
-            requestPath = req.url.substring(proxyPathPrefix.length);
-            break;
-        }
-    }
-
-    if (!targetBaseUrl) {
-        // Se a URL não corresponder a nenhum dos PROXY_TARGETS, assume o appnebula.co principal
-        targetBaseUrl = 'https://appnebula.co';
-    }
-
-    const targetUrl = `${targetBaseUrl}${requestPath}`;
-    console.log(`Requisição recebida: ${req.url} -> Proxy para: ${targetUrl}`);
-
-    try {
-        const axiosConfig = {
-            method: req.method,
-            url: targetUrl,
-            headers: {
-                'User-Agent': req.headers['user-agent'],
-                // Passa o Content-Type original, CRÍTICO para multipart/form-data
-                'Content-Type': req.headers['content-type'] || undefined,
-                'Accept-Encoding': 'identity', // Evita compressão que dificulta a manipulação
-                'Accept': req.headers['accept'],
-                'Cookie': req.headers['cookie'] || '',
-                // CRÍTICO: Reescreve o cabeçalho 'Origin' e 'Referer' para o domínio de destino
-                // Isso pode enganar as verificações de CORS e Referer do servidor original.
-                'Origin': targetBaseUrl,
-                'Referer': targetUrl,
-                // Remova 'Host' para evitar problemas com Axios reescrevendo-o
-                // delete req.headers['host']; // Isso não é necessário se você está usando axios
-            },
-            // Se tivermos o rawBody (para uploads), usamos ele. Senão, usamos req.body (para JSON/URL-encoded)
-            data: req.rawBody || req.body,
-            responseType: 'arraybuffer',
-            maxRedirects: 0,
-            validateStatus: function (status) {
-                return status >= 200 && status < 400;
-            },
-        };
-
-        const response = await axios(axiosConfig);
-
-        // --- Lógica de Interceptação de Redirecionamento (Status 3xx) ---
-        if (response.status >= 300 && response.status < 400) {
-            const redirectLocation = response.headers.location;
-            if (redirectLocation) {
-                const fullRedirectUrl = new URL(redirectLocation, targetBaseUrl).href;
-
-                if (fullRedirectUrl.includes('/pt/witch-power/email')) {
-                    console.log('Interceptando redirecionamento para /email. Redirecionando para /onboarding.');
-                    return res.redirect(302, '/pt/witch-power/onboarding');
-                }
-
-                const proxiedRedirectPath = fullRedirectUrl.replace(targetBaseUrl, '');
-                console.log(`Redirecionamento do destino: ${fullRedirectUrl} -> Reescrevendo para: ${proxiedRedirectPath}`);
-                return res.redirect(response.status, proxiedRedirectPath);
-            }
-        }
-
-        // --- Repassa Cabeçalhos da Resposta do Destino para o Cliente ---
-        Object.keys(response.headers).forEach(header => {
-            if (!['transfer-encoding', 'content-encoding', 'content-length', 'set-cookie'].includes(header.toLowerCase())) {
-                res.setHeader(header, response.headers[header]);
-            }
+        proxyRes.on('data', (chunk) => {
+            chunks.push(chunk);
         });
 
-        // Lida com o cabeçalho 'Set-Cookie': reescreve o domínio do cookie para o seu domínio
-        const setCookieHeader = response.headers['set-cookie'];
-        if (setCookieHeader) {
-            const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-            const modifiedCookies = cookies.map(cookie => {
-                // Remove o atributo 'Domain' para que o navegador defina o domínio atual (o seu)
-                // E ajusta o 'Path' para o caminho base do seu proxy, se aplicável
-                return cookie.replace(/Domain=[^;]+/, '').replace(/; Path=\//, `; Path=${req.baseUrl || '/'}`);
-            });
-            res.setHeader('Set-Cookie', modifiedCookies);
-        }
+        proxyRes.on('end', () => {
+            const buffer = Buffer.concat(chunks);
+            let data = buffer.toString('utf8');
+            const contentType = proxyRes.headers['content-type'];
 
-        const contentType = response.headers['content-type'] || '';
-        if (contentType.includes('text/html')) {
-            let html = response.data.toString('utf8');
-            const $ = cheerio.load(html);
-
-            // Reescrever URLs relativas e absolutas que apontam para os TARGET_BASE_URLs
-            $('[href], [src], [action]').each((i, el) => {
-                const element = $(el);
-                let attrName = '';
-                if (element.is('link') || element.is('a') || element.is('area')) {
-                    attrName = 'href';
-                } else if (element.is('script') || element.is('img') || element.is('source') || element.is('iframe')) {
-                    attrName = 'src';
-                } else if (element.is('form')) {
-                    attrName = 'action';
-                }
-
-                if (attrName) {
-                    let originalUrl = element.attr(attrName);
-                    if (originalUrl) {
-                        let replaced = false;
-                        for (const [proxyPathPrefix, targetUrl] of Object.entries(PROXY_TARGETS)) {
-                             // Se a URL original começa com o URL completo do destino, a reescrevemos
-                             if (originalUrl.startsWith(targetUrl)) {
-                                 // Ex: https://reading.nebulahoroscope.com/api/v1/palmistry/detect -> /api/v1/palmistry/detect
-                                 element.attr(attrName, proxyPathPrefix + originalUrl.substring(targetUrl.length));
-                                 replaced = true;
-                                 break;
-                             }
-                        }
-                        // Se não foi substituída e é uma URL relativa que começa com '/', garantir que funcione do root
-                        if (!replaced && originalUrl.startsWith('/') && !originalUrl.startsWith('//')) {
-                            // Já está ok, pois nosso proxy está no root '/' do seu domínio.
-                            // Não precisa de prefixo adicional como `/meu-proxy${originalUrl}`.
-                        }
-                    }
-                }
-            });
-
-            // Redirecionamento Frontend para /email (fallback)
-            if (req.url.includes('/pt/witch-power/email')) {
-                console.log('Detectada slug /email no frontend. Injetando script de redirecionamento.');
-                $('head').append(`
-                    <script>
-                        window.location.replace('/pt/witch-power/onboarding');
-                    </script>
-                `);
+            if (contentType && (contentType.includes('text/html') || contentType.includes('text/css') || contentType.includes('application/javascript'))) {
+                // Reescreve as URLs absolutas do servidor de origem para o seu proxy
+                // ex: "/_next/static" vira "/_next/static"
+                // ex: "/pt/witch-power" vira "/pt/witch-power"
+                data = data.replace(new RegExp(TARGET_URL.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'g'), '');
+                
+                // Esta é a parte crucial: Se o conteúdo tiver paths como "/_next/static",
+                // precisamos garantir que eles sejam prefixados com "/pt/witch-power"
+                // para que a primeira regra do proxy os capture corretamente.
+                // Isso é um pouco contraintuitivo: o servidor de origem pode não saber do "/pt/witch-power"
+                // mas seu proxy sabe e precisa reescrever para si mesmo.
+                // O ideal é que o Next.js no servidor de origem já gerasse caminhos completos para os assets.
+                // Se ele está gerando apenas /_next/static, então a primeira regra do proxy é suficiente.
+                // Mas se ele gera links internos para "/pt/witch-power/outra-pagina",
+                // você precisaria de regras mais complexas aqui.
+                // Por agora, vou focar em garantir que o HTML e JS chamem o /_next/static corretamente.
+                
+                // Se a URL original no req.url for /pt/witch-power/prelanding, o proxyReq.path será /prelanding.
+                // O HTML retornado do appnebula.co/prelanding pode ter links para /_next/static/...
+                // E o proxy precisa interceptar isso no nível mais alto.
+                // A ordem das regras já deve ajudar nisso.
             }
 
-            // Modificações específicas para /trialChoice
-            if (req.url.includes('/pt/witch-power/trialChoice')) {
-                console.log('Modificando conteúdo para /trialChoice (preços e textos).');
-                $('body').html(function(i, originalHtml) {
-                    return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
-                        const usdValue = parseFloat(p1);
-                        const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                        return `R$ ${brlValue}`;
-                    });
-                });
-                $('h2:contains("Trial Choice")').text('Escolha sua Prova Gratuita (Modificado)');
-                $('p:contains("Selecione sua opção de teste")').text('Agora com preços adaptados para o Brasil!');
-            }
-
-            // Modificações específicas para /trialPaymentancestral
-            if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
-                console.log('Modificando conteúdo para /trialPaymentancestral (preços e links de botões).');
-                $('body').html(function(i, originalHtml) {
-                    return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
-                        const usdValue = parseFloat(p1);
-                        const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                        return `R$ ${brlValue}`;
-                    });
-                });
-                $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
-                $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
-                $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
-                $('h1:contains("Trial Payment Ancestral")').text('Pagamento da Prova Ancestral (Preços e Links Atualizados)');
-            }
-
-            res.send($.html());
-        } else {
-            res.status(response.status).send(response.data);
+            res.setHeader('Content-Length', Buffer.byteLength(data));
+            originalEnd.call(res, data);
+        });
+    },
+    onError: (err, req, res) => {
+        console.error(`Erro no proxy para ${req.url}: ${err.message}`);
+        if (!res.headersSent) {
+            res.writeHead(500, { 'Content-Type': 'text/plain' });
+            res.end('Something went wrong. And we are reporting a custom error message.');
         }
+    },
+}));
 
-    } catch (error) {
-        console.error('Erro no proxy para', req.url, ':', error.message);
-        if (error.response) {
-            console.error('Status:', error.response.status, 'Headers:', error.response.headers, 'Data:', error.response.data ? error.response.data.toString('utf8').substring(0, 500) : '');
-            res.status(error.response.status).send(`Erro ao carregar o conteúdo do site externo: ${error.response.statusText || 'Erro desconhecido'} (Status: ${error.response.status})`);
-        } else {
-            res.status(500).send('Erro interno do servidor proxy ou de conexão com o destino.');
-        }
-    }
-});
+
+// 3. Regra para a rota raiz (/) e outras rotas que não são específicas de funil
+// Essa regra deve vir por último para não interceptar as regras mais específicas.
+app.use('/', apiProxy);
+
 
 app.listen(PORT, () => {
-    console.log(`Servidor proxy rodando em http://localhost:${PORT}`);
-    console.log(`Acesse o site "clonado" em http://localhost:${PORT}/pt/witch-power/prelanding`);
+  console.log(`Proxy server running on port ${PORT}`);
 });
