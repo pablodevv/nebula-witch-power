@@ -25,17 +25,31 @@ app.use(async (req, res) => {
     let targetDomain = MAIN_TARGET_URL; // Domínio padrão de destino
     let requestPath = req.url; // Caminho da requisição no seu proxy
 
-    // NOVO: 1. Lógica para Proxeamento do Subdomínio de Leitura (Mão)
+    // Lógica para Proxeamento do Subdomínio de Leitura (Mão)
     // Se a requisição recebida no seu proxy começa com '/reading/'
-    // (Este é um prefixo que você vai usar para sinalizar requisições para esse subdomínio)
     if (req.url.startsWith('/reading/')) {
         targetDomain = READING_SUBDOMAIN_TARGET;
         // Remove o prefixo '/reading' para que a URL original vá para o destino
         requestPath = req.url.substring('/reading'.length);
         if (requestPath === '') requestPath = '/'; // Garante que /reading/ vá para a raiz do subdomínio
         console.log(`[READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
+        // Logar cabeçalhos e parte do corpo para depuração
+        console.log(`[READING PROXY] Método: ${req.method}`);
+        console.log(`[READING PROXY] Headers: ${JSON.stringify(req.headers)}`);
+        // Se for POST/PUT, tente logar uma parte do corpo para ver se está chegando
+        if (req.method === 'POST' || req.method === 'PUT' && req.body) {
+            // Cuidado ao logar todo o corpo de uma imagem, pode ser muito grande
+            // Apenas loga o tipo ou primeiros 100 caracteres se for string/buffer
+            if (typeof req.body === 'object' && req.body instanceof Buffer) {
+                console.log(`[READING PROXY] Corpo recebido: Buffer de ${req.body.length} bytes`);
+            } else if (typeof req.body === 'string') {
+                console.log(`[READING PROXY] Corpo recebido (parte): ${req.body.substring(0, 100)}`);
+            } else {
+                console.log(`[READING PROXY] Corpo recebido (tipo): ${typeof req.body}`);
+            }
+        }
     } 
-    // 2. Outras requisições (assets, funil, raiz) vão para o domínio principal (MAIN_TARGET_URL)
+    // Outras requisições (assets, funil, raiz) vão para o domínio principal (MAIN_TARGET_URL)
     else {
         console.log(`[MAIN PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
     }
@@ -50,11 +64,13 @@ app.use(async (req, res) => {
                 'User-Agent': req.headers['user-agent'],
                 'Accept-Encoding': 'identity', // Crucial para manipular o conteúdo
                 'Accept': req.headers['accept'],
-                // Importante: Passar o Host original do cliente pode causar problemas de certificado no destino
-                // É melhor deixar o Axios/Node.js definir o Host para o targetDomain
-                // 'Host': req.headers['host'], // Removido ou comentado
+                // Removido ou comentado: 'Host': req.headers['host'], // É melhor deixar o Axios/Node.js definir o Host
                 'Cookie': req.headers['cookie'] || ''
             },
+            // IMPORTANTE para uploads: Axios com express.json() / express.urlencoded()
+            // geralmente lida bem com FormData se os headers Content-Type estiverem corretos.
+            // Se for raw binary, pode ser necessário passar req como stream.
+            // Para `multipart/form-data` enviado pelo navegador, `req.body` do Express já é parsed.
             data: req.method === 'POST' || req.method === 'PUT' ? req.body : undefined,
             responseType: 'arraybuffer',
             maxRedirects: 0,
@@ -67,27 +83,20 @@ app.use(async (req, res) => {
         if (response.status >= 300 && response.status < 400) {
             const redirectLocation = response.headers.location;
             if (redirectLocation) {
-                // Determine o domínio base para resolver o redirecionamento.
-                // Se o redirecionamento veio do subdomínio de leitura, resolve em relação a ele.
-                const redirectBase = targetDomain; // Usa o domínio que foi o target original da requisição
-
+                const redirectBase = targetDomain; 
                 const fullRedirectUrl = new URL(redirectLocation, redirectBase).href;
 
-                // **REDIRECIONAMENTO ESPECÍFICO: /pt/witch-power/email para /pt/witch-power/onboarding**
                 if (fullRedirectUrl.includes('/pt/witch-power/email')) {
                     console.log('Interceptando redirecionamento para /email. Redirecionando para /onboarding.');
                     return res.redirect(302, '/pt/witch-power/onboarding');
                 }
 
-                // Reescreve a URL de redirecionamento para apontar para o nosso proxy
                 let proxiedRedirectPath = fullRedirectUrl;
-                // Substitui o domínio principal ou o subdomínio pelo prefixo do proxy
                 if (proxiedRedirectPath.startsWith(MAIN_TARGET_URL)) {
                     proxiedRedirectPath = proxiedRedirectPath.replace(MAIN_TARGET_URL, '');
                 } else if (proxiedRedirectPath.startsWith(READING_SUBDOMAIN_TARGET)) {
-                    proxiedRedirectPath = proxiedRedirectPath.replace(READING_SUBDOMAIN_TARGET, '/reading'); // Adiciona o prefixo /reading/
+                    proxiedRedirectPath = proxiedRedirectPath.replace(READING_SUBDOMAIN_TARGET, '/reading'); 
                 }
-                 // Se for apenas '/', ou seja, raiz do proxy, garante que não fique vazio
                 if (proxiedRedirectPath === '') proxiedRedirectPath = '/';
 
                 console.log(`Redirecionamento do destino: ${fullRedirectUrl} -> Reescrevendo para: ${proxiedRedirectPath}`);
@@ -107,8 +116,6 @@ app.use(async (req, res) => {
         if (setCookieHeader) {
             const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
             const modifiedCookies = cookies.map(cookie => {
-                // Remove o atributo 'Domain' para que o navegador defina o domínio atual (o seu)
-                // E ajusta o 'Path' para o caminho base do seu proxy, se aplicável
                 return cookie.replace(/Domain=[^;]+/, '').replace(/; Path=\//, `; Path=${req.baseUrl || '/'}`);
             });
             res.setHeader('Set-Cookie', modifiedCookies);
@@ -135,21 +142,63 @@ app.use(async (req, res) => {
                 if (attrName) {
                     let originalUrl = element.attr(attrName);
                     if (originalUrl) {
-                        // Se a URL for absoluta e apontar para o site de destino (appnebula.co)
                         if (originalUrl.startsWith(MAIN_TARGET_URL)) {
                             element.attr(attrName, originalUrl.replace(MAIN_TARGET_URL, ''));
                         }
-                        // NOVO: Se a URL for absoluta e apontar para o subdomínio da API (reading.nebulahoroscope.com)
                         else if (originalUrl.startsWith(READING_SUBDOMAIN_TARGET)) {
                             element.attr(attrName, originalUrl.replace(READING_SUBDOMAIN_TARGET, '/reading'));
                         }
-                        // URLs relativas (ex: /_next/static/...) já funcionam, pois o proxy está no root.
-                        // Mas se houver URLs como //sub.domain.com/path, elas podem precisar de tratamento,
-                        // embora 'changeOrigin: true' no http-proxy-middleware (se estivéssemos usando) ajudaria.
-                        // Com a sua abordagem, a URL precisa ser reescrita explicitamente.
                     }
                 }
             });
+
+            // NOVO: Script para reescrever URLs de API dinâmicas no JavaScript
+            // Injeta este script no HEAD para que ele execute antes de outros scripts.
+            $('head').prepend(`
+                <script>
+                    (function() {
+                        const readingSubdomainTarget = '${READING_SUBDOMAIN_TARGET}';
+                        const proxyPrefix = '/reading';
+
+                        // Sobrescreve window.fetch
+                        const originalFetch = window.fetch;
+                        window.fetch = function(input, init) {
+                            let url = input;
+                            if (typeof input === 'string' && input.startsWith(readingSubdomainTarget)) {
+                                url = input.replace(readingSubdomainTarget, proxyPrefix);
+                                console.log('PROXY SHIM: REWRITE FETCH URL:', input, '->', url);
+                            } else if (input instanceof Request && input.url.startsWith(readingSubdomainTarget)) {
+                                // Se for um objeto Request, cria um novo Request com a URL modificada
+                                url = new Request(input.url.replace(readingSubdomainTarget, proxyPrefix), {
+                                    method: input.method,
+                                    headers: input.headers,
+                                    body: input.body,
+                                    mode: input.mode,
+                                    credentials: input.credentials,
+                                    cache: input.cache,
+                                    redirect: input.redirect,
+                                    referrer: input.referrer,
+                                    integrity: input.integrity,
+                                    keepalive: input.keepalive
+                                });
+                                console.log('PROXY SHIM: REWRITE FETCH Request Object URL:', input.url, '->', url.url);
+                            }
+                            return originalFetch.call(this, url, init);
+                        };
+
+                        // Sobrescreve XMLHttpRequest.prototype.open
+                        const originalXHRopen = XMLHttpRequest.prototype.open;
+                        XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
+                            let modifiedUrl = url;
+                            if (typeof url === 'string' && url.startsWith(readingSubdomainTarget)) {
+                                modifiedUrl = url.replace(readingSubdomainTarget, proxyPrefix);
+                                console.log('PROXY SHIM: REWRITE XHR URL:', url, '->', modifiedUrl);
+                            }
+                            originalXHRopen.call(this, method, modifiedUrl, async, user, password);
+                        };
+                    })();
+                </script>
+            `);
 
             // **REDIRECIONAMENTO FRONTAL (CLIENT-SIDE) PARA /pt/witch-power/email**
             if (req.url.includes('/pt/witch-power/email')) {
@@ -191,10 +240,8 @@ app.use(async (req, res) => {
                 $('h1:contains("Trial Payment Ancestral")').text('Pagamento da Prova Ancestral (Preços e Links Atualizados)');
             }
 
-            // Envia o HTML modificado de volta para o navegador do cliente
             res.send($.html());
         } else {
-            // Para outros tipos de arquivo (CSS, JS, imagens, etc.), apenas repassa o buffer de dados
             res.status(response.status).send(response.data);
         }
 
