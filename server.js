@@ -137,6 +137,14 @@ app.use(async (req, res) => {
                 }
             });
 
+            // Apenas log — sem modificação destrutiva
+            if (req.url.includes('/pt/witch-power/trialChoice')) {
+                console.log('Interceptando /trialChoice (sem modificação de conteúdo)');
+            }
+            if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
+                console.log('Interceptando /trialPaymentancestral (sem modificação de conteúdo)');
+            }
+
             $('head').prepend(`
                 <script>
                     (function() {
