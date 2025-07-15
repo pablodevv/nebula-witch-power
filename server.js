@@ -13,10 +13,6 @@ const PORT = process.env.PORT || 10000;
 // URLs de destino
 const MAIN_TARGET_URL = 'https://appnebula.co';
 const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
-const API_NEBULA_TARGET = 'https://api.appnebula.co';
-const LOGS_NEBULA_TARGET = 'https://logs.asknebula.com';
-const GROWTHBOOK_TARGET = 'https://growthbook.nebulahoroscope.com';
-const TEMPO_TARGET = 'https://prod-tempo-web.nebulahoroscope.com';
 
 // Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
 app.use(fileUpload({
@@ -38,33 +34,35 @@ app.use(async (req, res) => {
     delete requestHeaders['x-forwarded-for'];
     delete requestHeaders['accept-encoding'];
 
+    // Interceptar chamadas de API externas ANTES do proxy principal
+    if (req.url.startsWith('/api-nebula/')) {
+        targetDomain = 'https://api.appnebula.co';
+        requestPath = req.url.replace('/api-nebula', '');
+        targetDomain = 'https://logs.asknebula.com';
+        requestPath = req.url.replace('/logs-nebula', '');
+        console.log(`[LOGS PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
+        targetDomain = 'https://growthbook.nebulahoroscope.com';
+        requestPath = req.url.replace('/growthbook-nebula', '');
+        console.log(`[GROWTHBOOK PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
+    } else if (req.url.startsWith('/tempo-nebula/')) {
+        targetDomain = 'https://prod-tempo-web.nebulahoroscope.com';
+        requestPath = req.url.replace('/tempo-nebula', '');
+        console.log(`[TEMPO PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
+    }
     // Lógica para Proxeamento do Subdomínio de Leitura (Mão)
-    if (req.url.startsWith('/reading/')) {
+    else if (req.url.startsWith('/reading/')) {
+        targetDomain = READING_SUBDOMAIN_TARGET;
+        targetDomain = 'https://prod-tempo-web.nebulahoroscope.com';
+        requestPath = req.url.replace('/tempo-nebula', '');
+        console.log(`[TEMPO PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
+    }
+    // Lógica para Proxeamento do Subdomínio de Leitura (Mão)
+    else if (req.url.startsWith('/reading/')) {
         targetDomain = READING_SUBDOMAIN_TARGET;
         requestPath = req.url.substring('/reading'.length);
         if (requestPath === '') requestPath = '/';
         console.log(`[READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
         console.log(`[READING PROXY] Método: ${req.method}`);
-    } else if (req.url.startsWith('/api-nebula/')) {
-        targetDomain = API_NEBULA_TARGET;
-        requestPath = req.url.substring('/api-nebula'.length);
-        if (requestPath === '') requestPath = '/';
-        console.log(`[API PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
-    } else if (req.url.startsWith('/logs-nebula/')) {
-        targetDomain = LOGS_NEBULA_TARGET;
-        requestPath = req.url.substring('/logs-nebula'.length);
-        if (requestPath === '') requestPath = '/';
-        console.log(`[LOGS PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
-    } else if (req.url.startsWith('/growthbook-nebula/')) {
-        targetDomain = GROWTHBOOK_TARGET;
-        requestPath = req.url.substring('/growthbook-nebula'.length);
-        if (requestPath === '') requestPath = '/';
-        console.log(`[GROWTHBOOK PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
-    } else if (req.url.startsWith('/tempo-nebula/')) {
-        targetDomain = TEMPO_TARGET;
-        requestPath = req.url.substring('/tempo-nebula'.length);
-        if (requestPath === '') requestPath = '/';
-        console.log(`[TEMPO PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
 
         if (req.files && Object.keys(req.files).length > 0) {
             console.log(`[READING PROXY] Arquivos recebidos: ${JSON.stringify(Object.keys(req.files))}`);
@@ -165,7 +163,7 @@ app.use(async (req, res) => {
 
         // Lógica de Modificação de Conteúdo (Apenas para HTML)
         const contentType = response.headers['content-type'] || '';
-        if (contentType.includes('text/html') && !req.url.includes('/pt/witch-power/trialChoice')) {
+        if (contentType.includes('text/html')) {
             let html = response.data.toString('utf8');
             const $ = cheerio.load(html);
 
@@ -192,125 +190,93 @@ app.use(async (req, res) => {
                             element.attr(attrName, originalUrl.replace(MAIN_TARGET_URL, ''));
                         } else if (originalUrl.startsWith(READING_SUBDOMAIN_TARGET)) {
                             element.attr(attrName, originalUrl.replace(READING_SUBDOMAIN_TARGET, '/reading'));
-                        } else if (originalUrl.startsWith(API_NEBULA_TARGET)) {
-                            element.attr(attrName, originalUrl.replace(API_NEBULA_TARGET, '/api-nebula'));
-                        } else if (originalUrl.startsWith(LOGS_NEBULA_TARGET)) {
-                            element.attr(attrName, originalUrl.replace(LOGS_NEBULA_TARGET, '/logs-nebula'));
-                        } else if (originalUrl.startsWith(GROWTHBOOK_TARGET)) {
-                            element.attr(attrName, originalUrl.replace(GROWTHBOOK_TARGET, '/growthbook-nebula'));
-                        } else if (originalUrl.startsWith(TEMPO_TARGET)) {
-                            element.attr(attrName, originalUrl.replace(TEMPO_TARGET, '/tempo-nebula'));
                         }
                     }
                 }
             });
 
-            // Script para reescrever URLs de API dinâmicas no JavaScript
-            $('head').prepend(`
+            // SCRIPT DE INTERCEPTAÇÃO MELHORADO - Inserido ANTES de qualquer outro script
+            const interceptScript = `
                 <script>
-                    (function() {
-                        // Intercepta ANTES de qualquer script ser carregado
-                        const readingSubdomainTarget = '${READING_SUBDOMAIN_TARGET}';
-                        const proxyPrefix = '/reading';
-                        const apiNebulaTarget = '${API_NEBULA_TARGET}';
-                        const apiNebulaPrefix = '/api-nebula';
-                        const logsNebulaTarget = '${LOGS_NEBULA_TARGET}';
-                        const logsNebulaPrefix = '/logs-nebula';
-                        const growthbookTarget = '${GROWTHBOOK_TARGET}';
-                        const growthbookPrefix = '/growthbook-nebula';
-                        const tempoTarget = '${TEMPO_TARGET}';
-                        const tempoPrefix = '/tempo-nebula';
-
-                        // Intercepta XMLHttpRequest IMEDIATAMENTE
-                        const originalXHRopen = XMLHttpRequest.prototype.open;
-                        XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
-                            let modifiedUrl = url;
-                            if (typeof url === 'string') {
-                                if (url.startsWith(readingSubdomainTarget)) {
-                                    modifiedUrl = url.replace(readingSubdomainTarget, proxyPrefix);
-                                    console.log('PROXY SHIM: REWRITE XHR URL:', url, '->', modifiedUrl);
-                                } else if (url.startsWith(apiNebulaTarget)) {
-                                    modifiedUrl = url.replace(apiNebulaTarget, apiNebulaPrefix);
-                                    console.log('PROXY SHIM: REWRITE API XHR URL:', url, '->', modifiedUrl);
-                                } else if (url.startsWith(logsNebulaTarget)) {
-                                    modifiedUrl = url.replace(logsNebulaTarget, logsNebulaPrefix);
-                                    console.log('PROXY SHIM: REWRITE LOGS XHR URL:', url, '->', modifiedUrl);
-                                } else if (url.startsWith(growthbookTarget)) {
-                                    modifiedUrl = url.replace(growthbookTarget, growthbookPrefix);
-                                    console.log('PROXY SHIM: REWRITE GROWTHBOOK XHR URL:', url, '->', modifiedUrl);
-                                } else if (url.startsWith(tempoTarget)) {
-                                    modifiedUrl = url.replace(tempoTarget, tempoPrefix);
-                                    console.log('PROXY SHIM: REWRITE TEMPO XHR URL:', url, '->', modifiedUrl);
-                                }
-                            }
-                            originalXHRopen.call(this, method, modifiedUrl, async, user, password);
-                        };
-
-                        // Intercepta fetch também
-                        const originalFetch = window.fetch;
-                        window.fetch = function(input, init) {
-                            let url = input;
-                            if (typeof input === 'string') {
-                                if (input.startsWith(readingSubdomainTarget)) {
-                                    url = input.replace(readingSubdomainTarget, proxyPrefix);
-                                    console.log('PROXY SHIM: REWRITE FETCH URL:', input, '->', url);
-                                } else if (input.startsWith(apiNebulaTarget)) {
-                                    url = input.replace(apiNebulaTarget, apiNebulaPrefix);
-                                    console.log('PROXY SHIM: REWRITE API FETCH URL:', input, '->', url);
-                                } else if (input.startsWith(logsNebulaTarget)) {
-                                    url = input.replace(logsNebulaTarget, logsNebulaPrefix);
-                                    console.log('PROXY SHIM: REWRITE LOGS FETCH URL:', input, '->', url);
-                                } else if (input.startsWith(growthbookTarget)) {
-                                    url = input.replace(growthbookTarget, growthbookPrefix);
-                                    console.log('PROXY SHIM: REWRITE GROWTHBOOK FETCH URL:', input, '->', url);
-                                } else if (input.startsWith(tempoTarget)) {
-                                    url = input.replace(tempoTarget, tempoPrefix);
-                                    console.log('PROXY SHIM: REWRITE TEMPO FETCH URL:', input, '->', url);
-                                }
-                            } else if (input instanceof Request) {
-                                let newUrl = input.url;
-                                if (input.url.startsWith(readingSubdomainTarget)) {
-                                    newUrl = input.url.replace(readingSubdomainTarget, proxyPrefix);
-                                    console.log('PROXY SHIM: REWRITE FETCH Request Object URL:', input.url, '->', newUrl);
-                                } else if (input.url.startsWith(apiNebulaTarget)) {
-                                    newUrl = input.url.replace(apiNebulaTarget, apiNebulaPrefix);
-                                    console.log('PROXY SHIM: REWRITE API Request Object URL:', input.url, '->', newUrl);
-                                } else if (input.url.startsWith(logsNebulaTarget)) {
-                                    newUrl = input.url.replace(logsNebulaTarget, logsNebulaPrefix);
-                                    console.log('PROXY SHIM: REWRITE LOGS Request Object URL:', input.url, '->', newUrl);
-                                } else if (input.url.startsWith(growthbookTarget)) {
-                                    newUrl = input.url.replace(growthbookTarget, growthbookPrefix);
-                                    console.log('PROXY SHIM: REWRITE GROWTHBOOK Request Object URL:', input.url, '->', newUrl);
-                                } else if (input.url.startsWith(tempoTarget)) {
-                                    newUrl = input.url.replace(tempoTarget, tempoPrefix);
-                                    console.log('PROXY SHIM: REWRITE TEMPO Request Object URL:', input.url, '->', newUrl);
-                                }
-                                
-                                if (newUrl !== input.url) {
-                                    url = new Request(newUrl, {
-                                        method: input.method,
-                                        headers: input.headers,
-                                        body: input.body,
-                                        mode: input.mode,
-                                        credentials: input.credentials,
-                                        cache: input.cache,
-                                        redirect: input.redirect,
-                                        referrer: input.referrer,
-                                        integrity: input.integrity,
-                                        keepalive: input.keepalive
-                                    });
-                                }
-                            }
-                            return originalFetch.call(this, url, init);
-                        };
+                    console.log('🔧 PROXY INTERCEPTOR: Iniciando interceptação ANTES de qualquer outro script...');
+                    
+                    // Intercepta IMEDIATAMENTE XMLHttpRequest
+                    const originalXHROpen = XMLHttpRequest.prototype.open;
+                    XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
+                        let modifiedUrl = url;
                         
-                        console.log('PROXY SHIM: Interceptação configurada para todos os domínios');
-                    })();
-                </script>
-            `);
+                        if (typeof url === 'string') {
+                            if (url.startsWith('https://api.appnebula.co/')) {
+                                modifiedUrl = url.replace('https://api.appnebula.co', '/api-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: XHR API →', url, '→', modifiedUrl);
+                            } else if (url.startsWith('https://logs.asknebula.com/')) {
+                                modifiedUrl = url.replace('https://logs.asknebula.com', '/logs-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: XHR LOGS →', url, '→', modifiedUrl);
+                            } else if (url.startsWith('https://growthbook.nebulahoroscope.com/')) {
+                                modifiedUrl = url.replace('https://growthbook.nebulahoroscope.com', '/growthbook-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: XHR GROWTHBOOK →', url, '→', modifiedUrl);
+                            } else if (url.startsWith('https://prod-tempo-web.nebulahoroscope.com/')) {
+                                modifiedUrl = url.replace('https://prod-tempo-web.nebulahoroscope.com', '/tempo-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: XHR TEMPO →', url, '→', modifiedUrl);
+                            } else if (url.startsWith('https://reading.nebulahoroscope.com/')) {
+                                modifiedUrl = url.replace('https://reading.nebulahoroscope.com', '/reading');
+                                console.log('🔧 PROXY INTERCEPTOR: XHR READING →', url, '→', modifiedUrl);
+                            }
+                        }
+                        
+                        return originalXHROpen.call(this, method, modifiedUrl, async, user, password);
+                    };
 
-            // REDIRECIONAMENTO CLIENT-SIDE MAIS AGRESSIVO PARA /pt/witch-power/email
-            $('head').append(`
+                    // Intercepta IMEDIATAMENTE fetch
+                    const originalFetch = window.fetch;
+                    window.fetch = function(input, init) {
+                        let url = input;
+                        
+                        if (typeof input === 'string') {
+                            if (input.startsWith('https://api.appnebula.co/')) {
+                                url = input.replace('https://api.appnebula.co', '/api-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH API →', input, '→', url);
+                            } else if (input.startsWith('https://logs.asknebula.com/')) {
+                                url = input.replace('https://logs.asknebula.com', '/logs-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH LOGS →', input, '→', url);
+                            } else if (input.startsWith('https://growthbook.nebulahoroscope.com/')) {
+                                url = input.replace('https://growthbook.nebulahoroscope.com', '/growthbook-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH GROWTHBOOK →', input, '→', url);
+                            } else if (input.startsWith('https://prod-tempo-web.nebulahoroscope.com/')) {
+                                url = input.replace('https://prod-tempo-web.nebulahoroscope.com', '/tempo-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH TEMPO →', input, '→', url);
+                            } else if (input.startsWith('https://reading.nebulahoroscope.com/')) {
+                                url = input.replace('https://reading.nebulahoroscope.com', '/reading');
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH READING →', input, '→', url);
+                            }
+                        } else if (input instanceof Request) {
+                            const originalUrl = input.url;
+                            if (originalUrl.startsWith('https://api.appnebula.co/')) {
+                                url = new Request(originalUrl.replace('https://api.appnebula.co', '/api-nebula'), input);
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH REQUEST API →', originalUrl, '→', url.url);
+                            } else if (originalUrl.startsWith('https://logs.asknebula.com/')) {
+                                url = new Request(originalUrl.replace('https://logs.asknebula.com', '/logs-nebula'), input);
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH REQUEST LOGS →', originalUrl, '→', url.url);
+                            } else if (originalUrl.startsWith('https://growthbook.nebulahoroscope.com/')) {
+                                url = new Request(originalUrl.replace('https://growthbook.nebulahoroscope.com', '/growthbook-nebula'), input);
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH REQUEST GROWTHBOOK →', originalUrl, '→', url.url);
+                            } else if (originalUrl.startsWith('https://prod-tempo-web.nebulahoroscope.com/')) {
+                                url = new Request(originalUrl.replace('https://prod-tempo-web.nebulahoroscope.com', '/tempo-nebula'), input);
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH REQUEST TEMPO →', originalUrl, '→', url.url);
+                            } else if (originalUrl.startsWith('https://reading.nebulahoroscope.com/')) {
+                                url = new Request(originalUrl.replace('https://reading.nebulahoroscope.com', '/reading'), input);
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH REQUEST READING →', originalUrl, '→', url.url);
+                            }
+                        }
+                        
+                        return originalFetch.call(this, url, init);
+                    };
+                </script>
+            `;
+
+            $('head').prepend(interceptScript);
+
+            $('body').append(`
                 <script>
                     console.log('CLIENT-SIDE REDIRECT SCRIPT: Initializing.');
 
@@ -349,7 +315,6 @@ app.use(async (req, res) => {
 
                     // Tenta executar imediatamente também para casos onde o script é injetado muito cedo
                     handleEmailRedirect();
-
                 </script>
             `);
 
