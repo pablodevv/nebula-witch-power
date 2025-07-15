@@ -141,7 +141,7 @@ app.use(async (req, res) => {
 
         // Lógica de Modificação de Conteúdo (Apenas para HTML)
         const contentType = response.headers['content-type'] || '';
-        if (contentType.includes('text/html')) {
+        if (contentType.includes('text/html') && !req.url.includes('/pt/witch-power/trialChoice')) {
             let html = response.data.toString('utf8');
             const $ = cheerio.load(html);
 
