@@ -260,33 +260,24 @@ app.use(async (req, res) => {
             if (req.url.includes('/pt/witch-power/trialChoice')) {
                 console.log('Modificando conteúdo para /trialChoice (preços e textos).');
 
-                // Encontra todos os botões de rádio de escolha do trial
+                // Preços para os botões
+                const newButtonPrices = ['R$ 5', 'R$ 10', 'R$ 14', 'R$ 18,67'];
                 const trialButtons = $('button[data-testid="trial-choice-radio-button-label"]');
 
-                // Mapeia os preços originais para os novos valores em BRL
-                const originalPrices = ['$1', '$5', '$9', '$13.67'];
-                const newPricesBRL = ['R$ 5', 'R$ 10', 'R$ 14', 'R$ 18,67'];
-
+                // Itera sobre os botões e define o texto explicitamente
                 trialButtons.each((index, element) => {
-                    const originalText = $(element).text();
-                    // Se o texto original corresponder a um dos preços conhecidos, substitui
-                    if (originalPrices.includes(originalText)) {
-                        $(element).text(newPricesBRL[index]);
-                    } else {
-                        // Caso contrário, tenta a conversão genérica (se ainda existirem outros preços)
-                        const convertedText = originalText.replace(CONVERSION_PATTERN, (match, p1) => {
-                            const usdValue = parseFloat(p1);
-                            if (!isNaN(usdValue)) {
-                                const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                                return `R$ ${brlValue}`;
-                            }
-                            return match; // Retorna o original se não conseguir converter
-                        });
-                        $(element).text(convertedText);
+                    if (newButtonPrices[index]) {
+                        $(element).text(newButtonPrices[index]);
+                        console.log(`Preço do botão ${index + 1} alterado para: ${newButtonPrices[index]}`);
                     }
                 });
 
+                // Altera o texto do parágrafo específico
+                // Usando a classe e o conteúdo parcial para maior especificidade
+                $('p.sc-edafe909-6:contains("$13,67")').text('Apesar do nosso custo real ser de R$ 18,67*, por favor selecione um valor que você considere justo.');
+                console.log('Texto do parágrafo de custo real alterado.');
 
+                // Outras modificações existentes
                 $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
                 $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
                 $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
