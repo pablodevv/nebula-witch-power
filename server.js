@@ -16,7 +16,7 @@ const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
 
 // Configurações para Modificação de Conteúdo
 const USD_TO_BRL_RATE = 5.00;
-const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g;
+const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g; // Manter para outras possíveis conversões genéricas
 
 // Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
 app.use(fileUpload({
@@ -104,7 +104,6 @@ app.use(async (req, res) => {
                     fullRedirectUrl = redirectLocation;
                 }
 
-                // Esta regra AINDA captura redirecionamentos do SERVIDOR DE DESTINO para /email
                 if (fullRedirectUrl.includes('/pt/witch-power/email')) {
                     console.log('Interceptando redirecionamento do servidor de destino para /email. Redirecionando para /onboarding.');
                     return res.redirect(302, '/pt/witch-power/onboarding');
@@ -228,41 +227,30 @@ app.use(async (req, res) => {
                 <script>
                     console.log('CLIENT-SIDE REDIRECT SCRIPT: Initializing.');
 
-                    // Variável para armazenar o ID do intervalo, permitindo limpá-lo
-                    let redirectCheckInterval;
+                    let redirectCheckInterval; // Variável para armazenar o ID do intervalo
 
                     function handleEmailRedirect() {
                         const currentPath = window.location.pathname;
-                        // Use startsWith para pegar /email e /email?param=value
                         if (currentPath.startsWith('/pt/witch-power/email')) {
                             console.log('CLIENT-SIDE REDIRECT: URL /pt/witch-power/email detectada. Forçando redirecionamento para /pt/witch-power/onboarding');
-                            // Limpa o intervalo imediatamente para evitar múltiplos redirecionamentos
                             if (redirectCheckInterval) {
                                 clearInterval(redirectCheckInterval);
                             }
-                            window.location.replace('/pt/witch-power/onboarding'); // Usa replace para não deixar no histórico
+                            window.location.replace('/pt/witch-power/onboarding');
                         }
                     }
 
-                    // 1. Executa no carregamento inicial da página (para quando há uma requisição HTTP direta ou client-side inicial)
                     document.addEventListener('DOMContentLoaded', handleEmailRedirect);
-
-                    // 2. Monitora mudanças na história do navegador (para navegações via SPA - pushState/replaceState)
                     window.addEventListener('popstate', handleEmailRedirect);
+                    redirectCheckInterval = setInterval(handleEmailRedirect, 100);
 
-                    // 3. Adiciona um verificador periódico como uma camada extra de segurança
-                    // para capturar qualquer transição que os eventos não peguem
-                    redirectCheckInterval = setInterval(handleEmailRedirect, 100); // Verifica a cada 100ms
-
-                    // Limpa o intervalo se a página for descarregada para evitar vazamento de memória
                     window.addEventListener('beforeunload', () => {
                         if (redirectCheckInterval) {
                             clearInterval(redirectCheckInterval);
                         }
                     });
 
-                    // Tenta executar imediatamente também para casos onde o script é injetado muito cedo
-                    handleEmailRedirect();
+                    handleEmailRedirect(); // Tenta executar imediatamente também
 
                 </script>
             `);
@@ -271,13 +259,34 @@ app.use(async (req, res) => {
             // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialChoice
             if (req.url.includes('/pt/witch-power/trialChoice')) {
                 console.log('Modificando conteúdo para /trialChoice (preços e textos).');
-                $('body').html(function(i, originalHtml) {
-                    return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
-                        const usdValue = parseFloat(p1);
-                        const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                        return `R$ ${brlValue}`;
-                    });
+
+                // Encontra todos os botões de rádio de escolha do trial
+                const trialButtons = $('button[data-testid="trial-choice-radio-button-label"]');
+
+                // Mapeia os preços originais para os novos valores em BRL
+                const originalPrices = ['$1', '$5', '$9', '$13.67'];
+                const newPricesBRL = ['R$ 5', 'R$ 10', 'R$ 14', 'R$ 18,67'];
+
+                trialButtons.each((index, element) => {
+                    const originalText = $(element).text();
+                    // Se o texto original corresponder a um dos preços conhecidos, substitui
+                    if (originalPrices.includes(originalText)) {
+                        $(element).text(newPricesBRL[index]);
+                    } else {
+                        // Caso contrário, tenta a conversão genérica (se ainda existirem outros preços)
+                        const convertedText = originalText.replace(CONVERSION_PATTERN, (match, p1) => {
+                            const usdValue = parseFloat(p1);
+                            if (!isNaN(usdValue)) {
+                                const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
+                                return `R$ ${brlValue}`;
+                            }
+                            return match; // Retorna o original se não conseguir converter
+                        });
+                        $(element).text(convertedText);
+                    }
                 });
+
+
                 $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
                 $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
                 $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
@@ -288,6 +297,7 @@ app.use(async (req, res) => {
             // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialPaymentancestral
             if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
                 console.log('Modificando conteúdo para /trialPaymentancestral (preços e links de botões).');
+                // Aqui você pode aplicar a mesma lógica de substituição específica ou manter a regex
                 $('body').html(function(i, originalHtml) {
                     return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
                         const usdValue = parseFloat(p1);
