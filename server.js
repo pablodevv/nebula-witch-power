@@ -14,7 +14,7 @@ const PORT = process.env.PORT || 10000;
 const MAIN_TARGET_URL = 'https://appnebula.co';
 const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
 
-// Configurações para Modificação de Conteúdo
+// Configurações para Modificação de Conteúdo (manter para futura referência, mas não usado ativamente na trialChoice)
 const USD_TO_BRL_RATE = 5.00;
 
 // Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
@@ -233,135 +233,12 @@ app.use(async (req, res) => {
             // ---
 
             // ---
-            // MODIFICAÇÕES CLIENT-SIDE PARA /pt/witch-power/trialChoice (preços e textos)
-            // Este script será injetado e executado no navegador após o carregamento da página
-            if (req.url.includes('/pt/witch-power/trialChoice')) {
-                console.log('Injetando script de modificação de conteúdo para /trialChoice no lado do cliente.');
-                $('body').append(`
-                    <script>
-                        document.addEventListener('DOMContentLoaded', function() {
-                            console.log('CLIENT-SIDE CONTENT MOD: DOMContentLoaded para trialChoice.');
-
-                            const newButtonPrices = ['R$ 5', 'R$ 10', 'R$ 14', 'R$ 18,67'];
-
-                            // Função para aplicar as modificações
-                            function applyTrialChoiceModifications() {
-                                let changedSomething = false;
-
-                                // Modificar botões de preço
-                                const trialButtons = document.querySelectorAll('button[data-testid="trial-choice-radio-button-label"]');
-                                if (trialButtons.length > 0) {
-                                    trialButtons.forEach((button, index) => {
-                                        // **REMOVIDA A CONDIÇÃO: button.textContent.includes('$')**
-                                        // Agora forçamos a atualização do texto
-                                        if (newButtonPrices[index]) {
-                                            button.textContent = newButtonPrices[index];
-                                            console.log('CLIENT-SIDE CONTENT MOD: Botão de preço modificado: ' + newButtonPrices[index]);
-                                            changedSomething = true;
-                                        }
-                                    });
-                                }
-
-                                // Modificar o parágrafo de custo real
-                                const allParagraphs = document.querySelectorAll('p');
-                                allParagraphs.forEach(p => {
-                                    if (p.textContent.includes('$13,67*') && p.classList.contains('sc-edafe909-6')) {
-                                        p.textContent = 'Apesar do nosso custo real ser de R$ 18,67*, por favor selecione um valor que você considere justo.';
-                                        console.log('CLIENT-SIDE CONTENT MOD: Parágrafo de custo real modificado.');
-                                        changedSomething = true;
-                                    }
-                                });
-
-
-                                // Modificar o título H2
-                                const allH2s = document.querySelectorAll('h2');
-                                allH2s.forEach(h2 => {
-                                    if (h2.textContent.includes('Trial Choice')) {
-                                         h2.textContent = 'Escolha sua Prova Gratuita (Preços em Reais)';
-                                         console.log('CLIENT-SIDE CONTENT MOD: Título H2 modificado.');
-                                         changedSomething = true;
-                                    }
-                                });
-
-
-                                // Modificar o parágrafo "Selecione sua opção de teste"
-                                const allPs = document.querySelectorAll('p');
-                                allPs.forEach(p => {
-                                    if (p.textContent.includes('Selecione sua opção de teste')) {
-                                         p.textContent = 'Agora com preços adaptados para o Brasil!';
-                                         console.log('CLIENT-SIDE CONTENT MOD: Parágrafo "Selecione sua opção" modificado.');
-                                         changedSomething = true;
-                                    }
-                                });
-
-
-                                // Modificar os atributos href dos botões (manter como estavam)
-                                const buyButtonAncestral = document.getElementById('buyButtonAncestral');
-                                if (buyButtonAncestral) {
-                                    buyButtonAncestral.href = 'https://seusite.com/link-de-compra-ancestral-em-reais';
-                                    console.log('CLIENT-SIDE CONTENT MOD: buyButtonAncestral href modificado.');
-                                    changedSomething = true;
-                                }
-                                const ctaButtonTrial = document.querySelector('.cta-button-trial');
-                                if (ctaButtonTrial) {
-                                    ctaButtonTrial.href = 'https://seusite.com/novo-link-de-compra-geral';
-                                    console.log('CLIENT-SIDE CONTENT MOD: cta-button-trial href modificado.');
-                                    changedSomething = true;
-                                }
-                                // Seletor para o link "Comprar Agora" - precisa ser mais robusto, pois ":contains" não é nativo
-                                const buyNowLink = Array.from(document.querySelectorAll('a')).find(a => a.textContent.includes('Comprar Agora'));
-                                if (buyNowLink) {
-                                    buyNowLink.href = 'https://seusite.com/meu-novo-link-de-compra-agora';
-                                    console.log('CLIENT-SIDE CONTENT MOD: Link "Comprar Agora" href modificado.');
-                                    changedSomething = true;
-                                }
-
-
-                                return changedSomething;
-                            }
-
-                            // Tenta aplicar as modificações imediatamente com um pequeno atraso,
-                            // para dar mais tempo ao Next.js de renderizar o HTML inicial,
-                            // mesmo que ainda sem os valores de '$'.
-                            setTimeout(function() {
-                                if (applyTrialChoiceModifications()) {
-                                    console.log('CLIENT-SIDE CONTENT MOD: Modificações iniciais aplicadas após pequeno atraso.');
-                                }
-                            }, 50); // Atraso de 50ms
-
-                            // Use um MutationObserver para detectar quando o conteúdo dinâmico é adicionado ou alterado
-                            const observer = new MutationObserver(function(mutationsList, observer) {
-                                // Atraso dentro do observer também, para dar mais tempo à renderização completa
-                                setTimeout(function() {
-                                    if (applyTrialChoiceModifications()) {
-                                        console.log('CLIENT-SIDE CONTENT MOD: Modificações aplicadas via MutationObserver. Desconectando.');
-                                        observer.disconnect();
-                                        if (window.fallbackTrialChoiceInterval) {
-                                            clearInterval(window.fallbackTrialChoiceInterval);
-                                        }
-                                    }
-                                }, 100); // Atraso de 100ms
-                            });
-
-                            // Observa mudanças no body e seus descendentes
-                            observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-
-                            // Fallback com setInterval, caso MutationObserver falhe ou demore
-                            window.fallbackTrialChoiceInterval = setInterval(function() {
-                                if (applyTrialChoiceModifications()) {
-                                    console.log('CLIENT-SIDE CONTENT MOD: Modificações aplicadas via fallback setInterval. Limpando.');
-                                    clearInterval(window.fallbackTrialChoiceInterval);
-                                    observer.disconnect();
-                                }
-                            }, 300); // Aumentei para 300ms, dando mais tempo para o JS do site carregar
-                        }); // Fim do DOMContentLoaded
-                    </script>
-                `);
-            }
+            // NENHUMA MODIFICAÇÃO DE CONTEÚDO CLIENT-SIDE PARA /pt/witch-power/trialChoice AQUI.
+            // Deixaremos o conteúdo original carregar sem interferência para testar.
             // ---
 
             // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialPaymentancestral
-            // Se esta página também for SPA, será necessário aplicar a mesma lógica client-side
+            // Esta modificação continua, pois é uma substituição direta no HTML estático do servidor.
             if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
                 console.log('Modificando conteúdo para /trialPaymentancestral (preços e links de botões).');
                 $('body').html(function(i, originalHtml) {
@@ -376,6 +253,7 @@ app.use(async (req, res) => {
                 });
                 $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
                 $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
+                // Seletor para o link "Comprar Agora" - precisa ser mais robusto, pois ":contains" não é nativo
                 $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
                 $('h1:contains("Trial Payment Ancestral")').text('Pagamento da Prova Ancestral (Preços e Links Atualizados)');
             }
