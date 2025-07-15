@@ -74,22 +74,20 @@ app.use(async (req, res) => {
 
     const targetUrl = `${targetBaseUrl}${requestPath}`;
 
-    let requestData = req.body; // Padrão para body
-    
-    // Verifica se a requisição original tinha um Content-Type 'multipart/form-data'
-    const isMultipart = req.headers['content-type'] && req.headers['content-type'].includes('multipart/form-data');
+    let requestData; // Inicializa sem valor definido
 
+    // Verifica se a requisição original tinha um Content-Type 'multipart/form-data'
+    // e se há arquivos, mesmo que o corpo não seja JSON ou outro.
     if (req.files && Object.keys(req.files).length > 0) {
         const formData = new FormData();
         for (const key in req.files) {
             const file = req.files[key];
             formData.append(key, file.data, { filename: file.name, contentType: file.mimetype });
         }
+        // Anexa também os campos de texto do req.body (se houver) ao FormData
         if (req.body && Object.keys(req.body).length > 0) {
             for (const key in req.body) {
-                // Ensure form-data fields are correctly appended
                 if (typeof req.body[key] === 'object' && req.body[key] !== null) {
-                    // If it's an object, stringify it (common for JSON payloads within form data)
                     formData.append(key, JSON.stringify(req.body[key]), { contentType: 'application/json' });
                 } else {
                     formData.append(key, req.body[key]);
@@ -97,27 +95,38 @@ app.use(async (req, res) => {
             }
         }
         requestData = formData;
-        // Axios cuidará dos cabeçalhos do FormData, não precisamos definir Content-Type aqui.
     } else if (req.headers['content-type'] && req.headers['content-type'].includes('application/json')) {
-        // Se for JSON, o corpo já foi bufferizado por express-fileupload. Precisamos parsear.
-        try {
-            requestData = JSON.parse(req.body.toString());
-        } catch (e) {
-            console.error("Erro ao parsear JSON do corpo da requisição:", e);
-            requestData = req.body; // Use o buffer original se o parse falhar
+        // Se for JSON, mas não multipart, tenta parsear o corpo como JSON
+        if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
+            try {
+                requestData = JSON.parse(req.body.toString('utf8'));
+            } catch (e) {
+                console.error("Erro ao parsear JSON do corpo da requisição:", e);
+                requestData = req.body; // Usa o buffer original se o parse falhar
+            }
+        } else if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+             // Caso o express-fileupload já tenha parseado um JSON simples em req.body
+             requestData = req.body;
+        } else {
+            requestData = undefined; // Não há dados para JSON
         }
-    } else {
-        // Para outros tipos de corpo (ex: text, url-encoded), use o buffer original
+    } else if (req.body && Buffer.isBuffer(req.body) && req.body.length > 0) {
+        // Para outros tipos de corpo (ex: text, url-encoded), se req.body for um buffer
         requestData = req.body;
+    } else if (req.body && typeof req.body === 'object' && Object.keys(req.body).length > 0) {
+        // Se req.body já é um objeto parseado (ex: urlencoded)
+        requestData = req.body;
+    } else {
+        // Se req.body é undefined ou vazio para outros tipos, não há dados.
+        requestData = undefined;
     }
-
 
     try {
         const response = await axios({
             method: req.method,
             url: targetUrl,
             headers: requestData instanceof FormData ? { ...requestHeaders, ...requestData.getHeaders() } : requestHeaders, // Adiciona headers de FormData se for o caso
-            data: requestData,
+            data: requestData, // Envia o requestData apenas se for definido
             responseType: 'arraybuffer',
             maxRedirects: 0,
             validateStatus: function (status) {
@@ -235,7 +244,7 @@ app.use(async (req, res) => {
                 <script>
                     (function() {
                         const targetMap = ${JSON.stringify(TARGET_MAP)}; // Passa o mapa para o cliente
-                        
+
                         function rewriteUrl(originalUrl) {
                             if (typeof originalUrl !== 'string') return originalUrl;
 
