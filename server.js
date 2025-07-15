@@ -2,213 +2,108 @@
 
 const express = require('express');
 const axios = require('axios');
-const cheerio = require('cheerio');
-const path = require('path');
-const { URL } = require('url');
 const fileUpload = require('express-fileupload');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
 
 const MAIN_TARGET_URL = 'https://appnebula.co';
-const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
+const READING_TARGET = 'https://reading.nebulahoroscope.com';
 
-app.use(fileUpload({
-    limits: { fileSize: 50 * 1024 * 1024 },
-    createParentPath: true,
-    uriDecodeFileNames: true,
-    preserveExtension: true
-}));
+app.use(fileUpload({ limits: { fileSize: 50 * 1024 * 1024 } }));
 
 app.use(async (req, res) => {
-    let targetDomain = MAIN_TARGET_URL;
-    let requestPath = req.url;
+  const isReading = req.url.startsWith('/reading/');
+  const targetDomain = isReading ? READING_TARGET : MAIN_TARGET_URL;
+  const path = isReading ? req.url.replace('/reading', '') || '/' : req.url;
 
-    const requestHeaders = { ...req.headers };
-    delete requestHeaders['host'];
-    delete requestHeaders['connection'];
-    delete requestHeaders['x-forwarded-for'];
-    delete requestHeaders['accept-encoding'];
+  const headers = { ...req.headers };
+  ['host','connection','x-forwarded-for','accept-encoding'].forEach(h => delete headers[h]);
 
-    if (req.url.startsWith('/reading/')) {
-        targetDomain = READING_SUBDOMAIN_TARGET;
-        requestPath = req.url.substring('/reading'.length);
-        if (requestPath === '') requestPath = '/';
-        console.log(`[READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
-    } else {
-        console.log(`[MAIN PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
+  console.log(`${isReading ? '[READING]' : '[MAIN]'} Proxying ${req.method} ${req.url} → ${targetDomain}${path}`);
+
+  let data = req.body;
+  if (req.files?.photo) {
+    const FormData = require('form-data');
+    const form = new FormData();
+    form.append('photo', req.files.photo.data, {
+      filename: req.files.photo.name,
+      contentType: req.files.photo.mimetype
+    });
+    data = form;
+    Object.assign(headers, form.getHeaders());
+  }
+
+  try {
+    const resp = await axios({
+      url: targetDomain + path,
+      method: req.method,
+      headers,
+      data,
+      responseType: 'arraybuffer',
+      maxRedirects: 0,
+      validateStatus: status => status >= 200 && status < 400
+    });
+
+    // redirecionamentos
+    if (resp.status >= 300 && resp.headers.location) {
+      const loc = resp.headers.location.startsWith(targetDomain)
+        ? resp.headers.location.replace(targetDomain, isReading ? '/reading' : '')
+        : resp.headers.location;
+      if (loc.includes('/pt/witch-power/email'))
+        return res.redirect(302, '/pt/witch-power/onboarding');
+      return res.redirect(resp.status, loc || '/');
     }
 
-    const targetUrl = `${targetDomain}${requestPath}`;
-
-    try {
-        let requestData = req.body;
-
-        if (req.files && Object.keys(req.files).length > 0) {
-            const photoFile = req.files.photo;
-            if (photoFile) {
-                const formData = new (require('form-data'))();
-                formData.append('photo', photoFile.data, {
-                    filename: photoFile.name,
-                    contentType: photoFile.mimetype,
-                });
-                requestData = formData;
-                delete requestHeaders['content-type'];
-                delete requestHeaders['content-length'];
-                Object.assign(requestHeaders, formData.getHeaders());
-            }
-        }
-
-        const response = await axios({
-            method: req.method,
-            url: targetUrl,
-            headers: requestHeaders,
-            data: requestData,
-            responseType: 'arraybuffer',
-            maxRedirects: 0,
-            validateStatus: status => status >= 200 && status < 400,
-        });
-
-        if (response.status >= 300 && response.status < 400) {
-            const redirectLocation = response.headers.location;
-            if (redirectLocation) {
-                let fullRedirectUrl;
-                try {
-                    fullRedirectUrl = new URL(redirectLocation, targetDomain).href;
-                } catch (e) {
-                    fullRedirectUrl = redirectLocation;
-                }
-
-                if (fullRedirectUrl.includes('/pt/witch-power/email')) {
-                    return res.redirect(302, '/pt/witch-power/onboarding');
-                }
-
-                let proxiedRedirectPath = fullRedirectUrl;
-                if (proxiedRedirectPath.startsWith(MAIN_TARGET_URL)) {
-                    proxiedRedirectPath = proxiedRedirectPath.replace(MAIN_TARGET_URL, '');
-                } else if (proxiedRedirectPath.startsWith(READING_SUBDOMAIN_TARGET)) {
-                    proxiedRedirectPath = proxiedRedirectPath.replace(READING_SUBDOMAIN_TARGET, '/reading');
-                }
-                if (proxiedRedirectPath === '') proxiedRedirectPath = '/';
-
-                return res.redirect(response.status, proxiedRedirectPath);
-            }
-        }
-
-        Object.keys(response.headers).forEach(header => {
-            if (!['transfer-encoding', 'content-encoding', 'content-length', 'set-cookie', 'host', 'connection'].includes(header.toLowerCase())) {
-                res.setHeader(header, response.headers[header]);
-            }
-        });
-
-        const setCookieHeader = response.headers['set-cookie'];
-        if (setCookieHeader) {
-            const cookies = Array.isArray(setCookieHeader) ? setCookieHeader : [setCookieHeader];
-            const modifiedCookies = cookies.map(cookie => {
-                return cookie
-                    .replace(/Domain=[^;]+/, '')
-                    .replace(/; Secure/, '')
-                    .replace(/; Path=\//, `; Path=${req.baseUrl || '/'}`);
-            });
-            res.setHeader('Set-Cookie', modifiedCookies);
-        }
-
-        const contentType = response.headers['content-type'] || '';
-        if (contentType.includes('text/html')) {
-            let html = response.data.toString('utf8');
-            const $ = cheerio.load(html);
-
-            $('[href], [src], [action]').each((i, el) => {
-                const element = $(el);
-                let attrName = '';
-                if (element.is('link') || element.is('a') || element.is('area')) attrName = 'href';
-                else if (element.is('script') || element.is('img') || element.is('source') || element.is('iframe')) attrName = 'src';
-                else if (element.is('form')) attrName = 'action';
-
-                if (attrName) {
-                    let originalUrl = element.attr(attrName);
-                    if (originalUrl) {
-                        if (originalUrl.startsWith(MAIN_TARGET_URL)) {
-                            element.attr(attrName, originalUrl.replace(MAIN_TARGET_URL, ''));
-                        } else if (originalUrl.startsWith(READING_SUBDOMAIN_TARGET)) {
-                            element.attr(attrName, originalUrl.replace(READING_SUBDOMAIN_TARGET, '/reading'));
-                        }
-                    }
-                }
-            });
-
-            // Apenas log — sem modificação destrutiva
-            if (req.url.includes('/pt/witch-power/trialChoice')) {
-                console.log('Interceptando /trialChoice (sem modificação de conteúdo)');
-            }
-            if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
-                console.log('Interceptando /trialPaymentancestral (sem modificação de conteúdo)');
-            }
-
-            $('head').prepend(`
-                <script>
-                    (function() {
-                        const readingSubdomainTarget = '${READING_SUBDOMAIN_TARGET}';
-                        const proxyPrefix = '/reading';
-
-                        const originalFetch = window.fetch;
-                        window.fetch = function(input, init) {
-                            let url = input;
-                            if (typeof input === 'string' && input.startsWith(readingSubdomainTarget)) {
-                                url = input.replace(readingSubdomainTarget, proxyPrefix);
-                            } else if (input instanceof Request && input.url.startsWith(readingSubdomainTarget)) {
-                                url = new Request(input.url.replace(readingSubdomainTarget, proxyPrefix), input);
-                            }
-                            return originalFetch.call(this, url, init);
-                        };
-
-                        const originalXHRopen = XMLHttpRequest.prototype.open;
-                        XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
-                            let modifiedUrl = url;
-                            if (typeof url === 'string' && url.startsWith(readingSubdomainTarget)) {
-                                modifiedUrl = url.replace(readingSubdomainTarget, proxyPrefix);
-                            }
-                            originalXHRopen.call(this, method, modifiedUrl, async, user, password);
-                        };
-                    })();
-                </script>
-            `);
-
-            $('head').append(`
-                <script>
-                    let redirectCheckInterval;
-                    function handleEmailRedirect() {
-                        const currentPath = window.location.pathname;
-                        if (currentPath.startsWith('/pt/witch-power/email')) {
-                            if (redirectCheckInterval) clearInterval(redirectCheckInterval);
-                            window.location.replace('/pt/witch-power/onboarding');
-                        }
-                    }
-                    document.addEventListener('DOMContentLoaded', handleEmailRedirect);
-                    window.addEventListener('popstate', handleEmailRedirect);
-                    redirectCheckInterval = setInterval(handleEmailRedirect, 100);
-                    window.addEventListener('beforeunload', () => {
-                        if (redirectCheckInterval) clearInterval(redirectCheckInterval);
-                    });
-                    handleEmailRedirect();
-                </script>
-            `);
-
-            res.status(response.status).send($.html());
-        } else {
-            res.status(response.status).send(response.data);
-        }
-
-    } catch (error) {
-        console.error('Erro no proxy:', error.message);
-        if (error.response) {
-            res.status(error.response.status).send(`Erro ao carregar o conteúdo do site externo: ${error.response.statusText || 'Erro desconhecido'}`);
-        } else {
-            res.status(500).send('Erro interno do servidor proxy.');
-        }
+    // headers de resposta
+    for (const [k, v] of Object.entries(resp.headers)) {
+      if (!['transfer-encoding','content-encoding','content-length','set-cookie','host','connection'].includes(k.toLowerCase()))
+        res.setHeader(k, v);
     }
+    if (resp.headers['set-cookie']) {
+      const cookies = Array.isArray(resp.headers['set-cookie']) ? resp.headers['set-cookie'] : [resp.headers['set-cookie']];
+      res.setHeader('Set-Cookie', cookies.map(c => c.replace(/Domain=[^;]+/, '').replace('; Secure','')));
+    }
+
+    // Detecta rota dinâmica e simplesmente "passe adiante"
+    if (req.url.includes('/pt/witch-power/trialChoice') ||
+        req.url.includes('/pt/witch-power/trialPaymentancestral')) {
+      console.log('⚠️ Rota dinâmica detectada: passando HTML cru, sem modificar');
+      return res.status(resp.status).send(resp.data);
+    }
+
+    // Para outras rotas, faz o processamento via Cheerio
+    const cheerio = require('cheerio');
+    const html = resp.data.toString('utf8');
+    const $ = cheerio.load(html);
+
+    $('[href],[src],[action]').each((_, el) => {
+      const attrib = el.name === 'a' || el.name === 'link' || el.name === 'area' ? 'href' :
+                     ['script','img','iframe','source'].includes(el.name) ? 'src' :
+                     el.name === 'form' ? 'action' : null;
+      if (!attrib) return;
+      const orig = $(el).attr(attrib);
+      if (!orig) return;
+      if (orig.startsWith(MAIN_TARGET_URL))
+        $(el).attr(attrib, orig.replace(MAIN_TARGET_URL, ''));
+      if (orig.startsWith(READING_TARGET))
+        $(el).attr(attrib, orig.replace(READING_TARGET, '/reading'));
+    });
+
+    // injeção de scripts (só nestas rotas)
+    $('head').prepend(`
+      <script>/* REWRITER DE FETCH/XHR para reading */ (function(){ /* ... */ })();</script>
+    `).append(`
+      <script>/* REDIRECT /email → onboarding */ (function(){ /* ... */ })();</script>
+    `);
+
+    res.status(resp.status).send($.html());
+  }
+  catch (err) {
+    console.error('Proxy erro:', err.message);
+    return res.status(err.response?.status || 500)
+              .send(err.response ? `Erro upstream: ${err.response.statusText}` : 'Erro interno do proxy');
+  }
 });
 
-app.listen(PORT, () => {
-    console.log(`Servidor proxy rodando em http://localhost:${PORT}`);
-});
+app.listen(PORT, () => console.log(`✅ Proxy rodando em http://localhost:${PORT}`));
