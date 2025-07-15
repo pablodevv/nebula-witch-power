@@ -16,6 +16,7 @@ const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
 const API_NEBULA_TARGET = 'https://api.appnebula.co';
 const LOGS_NEBULA_TARGET = 'https://logs.asknebula.com';
 const GROWTHBOOK_TARGET = 'https://growthbook.nebulahoroscope.com';
+const TEMPO_TARGET = 'https://prod-tempo-web.nebulahoroscope.com';
 
 // Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
 app.use(fileUpload({
@@ -59,6 +60,11 @@ app.use(async (req, res) => {
         requestPath = req.url.substring('/growthbook-nebula'.length);
         if (requestPath === '') requestPath = '/';
         console.log(`[GROWTHBOOK PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
+    } else if (req.url.startsWith('/tempo-nebula/')) {
+        targetDomain = TEMPO_TARGET;
+        requestPath = req.url.substring('/tempo-nebula'.length);
+        if (requestPath === '') requestPath = '/';
+        console.log(`[TEMPO PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
 
         if (req.files && Object.keys(req.files).length > 0) {
             console.log(`[READING PROXY] Arquivos recebidos: ${JSON.stringify(Object.keys(req.files))}`);
@@ -192,6 +198,8 @@ app.use(async (req, res) => {
                             element.attr(attrName, originalUrl.replace(LOGS_NEBULA_TARGET, '/logs-nebula'));
                         } else if (originalUrl.startsWith(GROWTHBOOK_TARGET)) {
                             element.attr(attrName, originalUrl.replace(GROWTHBOOK_TARGET, '/growthbook-nebula'));
+                        } else if (originalUrl.startsWith(TEMPO_TARGET)) {
+                            element.attr(attrName, originalUrl.replace(TEMPO_TARGET, '/tempo-nebula'));
                         }
                     }
                 }
@@ -209,6 +217,8 @@ app.use(async (req, res) => {
                         const logsNebulaPrefix = '/logs-nebula';
                         const growthbookTarget = '${GROWTHBOOK_TARGET}';
                         const growthbookPrefix = '/growthbook-nebula';
+                        const tempoTarget = '${TEMPO_TARGET}';
+                        const tempoPrefix = '/tempo-nebula';
 
                         const originalFetch = window.fetch;
                         window.fetch = function(input, init) {
@@ -225,6 +235,9 @@ app.use(async (req, res) => {
                             } else if (typeof input === 'string' && input.startsWith(growthbookTarget)) {
                                 url = input.replace(growthbookTarget, growthbookPrefix);
                                 console.log('PROXY SHIM: REWRITE GROWTHBOOK FETCH URL:', input, '->', url);
+                            } else if (typeof input === 'string' && input.startsWith(tempoTarget)) {
+                                url = input.replace(tempoTarget, tempoPrefix);
+                                console.log('PROXY SHIM: REWRITE TEMPO FETCH URL:', input, '->', url);
                             } else if (input instanceof Request && input.url.startsWith(readingSubdomainTarget)) {
                                 url = new Request(input.url.replace(readingSubdomainTarget, proxyPrefix), {
                                     method: input.method,
@@ -281,6 +294,20 @@ app.use(async (req, res) => {
                                     keepalive: input.keepalive
                                 });
                                 console.log('PROXY SHIM: REWRITE GROWTHBOOK Request Object URL:', input.url, '->', url.url);
+                            } else if (input instanceof Request && input.url.startsWith(tempoTarget)) {
+                                url = new Request(input.url.replace(tempoTarget, tempoPrefix), {
+                                    method: input.method,
+                                    headers: input.headers,
+                                    body: input.body,
+                                    mode: input.mode,
+                                    credentials: input.credentials,
+                                    cache: input.cache,
+                                    redirect: input.redirect,
+                                    referrer: input.referrer,
+                                    integrity: input.integrity,
+                                    keepalive: input.keepalive
+                                });
+                                console.log('PROXY SHIM: REWRITE TEMPO Request Object URL:', input.url, '->', url.url);
                             }
                             return originalFetch.call(this, url, init);
                         };
@@ -300,6 +327,9 @@ app.use(async (req, res) => {
                             } else if (typeof url === 'string' && url.startsWith(growthbookTarget)) {
                                 modifiedUrl = url.replace(growthbookTarget, growthbookPrefix);
                                 console.log('PROXY SHIM: REWRITE GROWTHBOOK XHR URL:', url, '->', modifiedUrl);
+                            } else if (typeof url === 'string' && url.startsWith(tempoTarget)) {
+                                modifiedUrl = url.replace(tempoTarget, tempoPrefix);
+                                console.log('PROXY SHIM: REWRITE TEMPO XHR URL:', url, '->', modifiedUrl);
                             }
                             originalXHRopen.call(this, method, modifiedUrl, async, user, password);
                         };
