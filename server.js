@@ -15,8 +15,7 @@ const MAIN_TARGET_URL = 'https://appnebula.co';
 const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
 
 // Configurações para Modificação de Conteúdo
-const USD_TO_BRL_RATE = 5.00; // Manter a taxa para cálculos no cliente
-// A CONVERSION_PATTERN não será mais usada para substituições no lado do servidor aqui
+const USD_TO_BRL_RATE = 5.00;
 
 // Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
 app.use(fileUpload({
@@ -234,7 +233,7 @@ app.use(async (req, res) => {
             // ---
 
             // ---
-            // NOVO: MODIFICAÇÕES CLIENT-SIDE PARA /pt/witch-power/trialChoice (preços e textos)
+            // MODIFICAÇÕES CLIENT-SIDE PARA /pt/witch-power/trialChoice (preços e textos)
             // Este script será injetado e executado no navegador após o carregamento da página
             if (req.url.includes('/pt/witch-power/trialChoice')) {
                 console.log('Injetando script de modificação de conteúdo para /trialChoice no lado do cliente.');
@@ -253,7 +252,10 @@ app.use(async (req, res) => {
                                 const trialButtons = document.querySelectorAll('button[data-testid="trial-choice-radio-button-label"]');
                                 if (trialButtons.length > 0) {
                                     trialButtons.forEach((button, index) => {
-                                        if (newButtonPrices[index] && button.textContent.includes('$')) { // Checa se ainda tem dólar para não reescrever
+                                        // Verifica se o texto do botão ainda contém um cifrão '$'
+                                        // Isso evita reescrever o texto se ele já foi alterado
+                                        // ou se o JS original do Next.js ainda não carregou o preço
+                                        if (newButtonPrices[index] && button.textContent.includes('$')) {
                                             button.textContent = newButtonPrices[index];
                                             console.log('CLIENT-SIDE CONTENT MOD: Botão de preço modificado: ' + newButtonPrices[index]);
                                             changedSomething = true;
@@ -262,30 +264,40 @@ app.use(async (req, res) => {
                                 }
 
                                 // Modificar o parágrafo de custo real
-                                const costParagraph = document.querySelector('p.sc-edafe909-6');
-                                if (costParagraph && costParagraph.textContent.includes('$13,67')) {
-                                    costParagraph.textContent = 'Apesar do nosso custo real ser de R$ 18,67*, por favor selecione um valor que você considere justo.';
-                                    console.log('CLIENT-SIDE CONTENT MOD: Parágrafo de custo real modificado.');
-                                    changedSomething = true;
-                                }
+                                // Buscar todos os elementos <p> e iterar para encontrar o que contém a frase
+                                const allParagraphs = document.querySelectorAll('p');
+                                allParagraphs.forEach(p => {
+                                    if (p.textContent.includes('$13,67*') && p.classList.contains('sc-edafe909-6')) {
+                                        p.textContent = 'Apesar do nosso custo real ser de R$ 18,67*, por favor selecione um valor que você considere justo.';
+                                        console.log('CLIENT-SIDE CONTENT MOD: Parágrafo de custo real modificado.');
+                                        changedSomething = true;
+                                    }
+                                });
 
-                                // Modificar outros textos se necessário
-                                const h2Title = document.querySelector('h2:contains("Trial Choice")'); // Cheerio-like selector might not work directly
-                                if (h2Title && h2Title.textContent.includes('Trial Choice')) {
-                                     h2Title.textContent = 'Escolha sua Prova Gratuita (Preços em Reais)';
-                                     console.log('CLIENT-SIDE CONTENT MOD: Título H2 modificado.');
-                                     changedSomething = true;
-                                }
 
-                                const pSelectOption = document.querySelector('p:contains("Selecione sua opção de teste")');
-                                if (pSelectOption && pSelectOption.textContent.includes('Selecione sua opção de teste')) {
-                                     pSelectOption.textContent = 'Agora com preços adaptados para o Brasil!';
-                                     console.log('CLIENT-SIDE CONTENT MOD: Parágrafo "Selecione sua opção" modificado.');
-                                     changedSomething = true;
-                                }
+                                // Modificar o título H2
+                                const allH2s = document.querySelectorAll('h2');
+                                allH2s.forEach(h2 => {
+                                    if (h2.textContent.includes('Trial Choice')) {
+                                         h2.textContent = 'Escolha sua Prova Gratuita (Preços em Reais)';
+                                         console.log('CLIENT-SIDE CONTENT MOD: Título H2 modificado.');
+                                         changedSomething = true;
+                                    }
+                                });
 
-                                // Modificar os atributos href dos botões (já está no seu código, só confirmando)
-                                // Estes seletores (ID/classe) devem funcionar no lado do cliente
+
+                                // Modificar o parágrafo "Selecione sua opção de teste"
+                                const allPs = document.querySelectorAll('p');
+                                allPs.forEach(p => {
+                                    if (p.textContent.includes('Selecione sua opção de teste')) {
+                                         p.textContent = 'Agora com preços adaptados para o Brasil!';
+                                         console.log('CLIENT-SIDE CONTENT MOD: Parágrafo "Selecione sua opção" modificado.');
+                                         changedSomething = true;
+                                    }
+                                });
+
+
+                                // Modificar os atributos href dos botões (manter como estavam)
                                 const buyButtonAncestral = document.getElementById('buyButtonAncestral');
                                 if (buyButtonAncestral) {
                                     buyButtonAncestral.href = 'https://seusite.com/link-de-compra-ancestral-em-reais';
@@ -298,39 +310,45 @@ app.use(async (req, res) => {
                                     console.log('CLIENT-SIDE CONTENT MOD: cta-button-trial href modificado.');
                                     changedSomething = true;
                                 }
-                                const buyNowLink = document.querySelector('a:contains("Comprar Agora")');
+                                // Seletor para o link "Comprar Agora" - precisa ser mais robusto, pois ":contains" não é nativo
+                                const buyNowLink = Array.from(document.querySelectorAll('a')).find(a => a.textContent.includes('Comprar Agora'));
                                 if (buyNowLink) {
-                                    // Acha o elemento 'a' que contém o texto "Comprar Agora" e modifica
                                     buyNowLink.href = 'https://seusite.com/meu-novo-link-de-compra-agora';
                                     console.log('CLIENT-SIDE CONTENT MOD: Link "Comprar Agora" href modificado.');
                                     changedSomething = true;
                                 }
 
+
                                 return changedSomething;
                             }
 
                             // Tenta aplicar as modificações imediatamente
-                            applyTrialChoiceModifications();
+                            if (applyTrialChoiceModifications()) {
+                                // Se as modificações iniciais funcionarem, pode não precisar do observer.
+                                // Mas manteremos para robustez.
+                            }
+
 
                             // Use um MutationObserver para detectar quando o conteúdo dinâmico é adicionado ou alterado
-                            // Isso é crucial para SPAs que renderizam conteúdo após o DOM inicial
                             const observer = new MutationObserver(function(mutationsList, observer) {
-                                // Para cada mutação, verifique se as modificações foram aplicadas
-                                // E se sim, desconecte o observer para evitar loop e otimizar
                                 if (applyTrialChoiceModifications()) {
                                     console.log('CLIENT-SIDE CONTENT MOD: Modificações aplicadas via MutationObserver. Desconectando.');
-                                    observer.disconnect(); // Desconecta após a primeira modificação bem-sucedida
+                                    observer.disconnect();
+                                    // Limpa o setInterval de fallback também, se estiver rodando
+                                    if (window.fallbackTrialChoiceInterval) {
+                                        clearInterval(window.fallbackTrialChoiceInterval);
+                                    }
                                 }
                             });
 
                             // Observa mudanças no body e seus descendentes
                             observer.observe(document.body, { childList: true, subtree: true, characterData: true });
 
-                            // Fallback com setInterval, caso MutationObserver falhe em algum cenário específico
-                            let fallbackInterval = setInterval(function() {
+                            // Fallback com setInterval, caso MutationObserver falhe ou demore
+                            window.fallbackTrialChoiceInterval = setInterval(function() {
                                 if (applyTrialChoiceModifications()) {
                                     console.log('CLIENT-SIDE CONTENT MOD: Modificações aplicadas via fallback setInterval. Limpando.');
-                                    clearInterval(fallbackInterval);
+                                    clearInterval(window.fallbackTrialChoiceInterval);
                                     observer.disconnect(); // Garante que o observer também pare
                                 }
                             }, 200); // Tenta a cada 200ms
@@ -342,14 +360,21 @@ app.use(async (req, res) => {
             // ---
 
             // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialPaymentancestral
+            // Mantendo a lógica de servidor para esta página por enquanto, se não for SPA
+            // Se esta página também for SPA, será necessário aplicar a mesma lógica client-side
             if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
                 console.log('Modificando conteúdo para /trialPaymentancestral (preços e links de botões).');
-                // Mantendo a lógica de servidor para esta página por enquanto, se não for SPA
+                // Aqui você pode aplicar a mesma lógica de substituição específica ou manter a regex
+                // Se o problema de Next.js/TypeScript se aplicar aqui também, será preciso um script injetado similar
                 $('body').html(function(i, originalHtml) {
-                    return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
+                    // Esta regex ainda pode funcionar para texto simples dentro do HTML
+                    return originalHtml.replace(/\$(\d+(\.\d{2})?)/g, (match, p1) => {
                         const usdValue = parseFloat(p1);
-                        const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                        return `R$ ${brlValue}`;
+                        if (!isNaN(usdValue)) {
+                            const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
+                            return `R$ ${brlValue}`;
+                        }
+                        return match; // Retorna o original se não conseguir converter
                     });
                 });
                 $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
