@@ -14,10 +14,6 @@ const PORT = process.env.PORT || 10000;
 const MAIN_TARGET_URL = 'https://appnebula.co';
 const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
 
-// Configurações para Modificação de Conteúdo
-const USD_TO_BRL_RATE = 5.00;
-const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g;
-
 // Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
 app.use(fileUpload({
     limits: { fileSize: 50 * 1024 * 1024 }, // Limite de 50MB, ajuste se necessário
@@ -221,9 +217,7 @@ app.use(async (req, res) => {
                 </script>
             `);
 
-            // ---
             // REDIRECIONAMENTO CLIENT-SIDE MAIS AGRESSIVO PARA /pt/witch-power/email
-            // Este script será injetado em TODAS as páginas HTML para forçar o redirecionamento
             $('head').append(`
                 <script>
                     console.log('CLIENT-SIDE REDIRECT SCRIPT: Initializing.');
@@ -266,40 +260,6 @@ app.use(async (req, res) => {
 
                 </script>
             `);
-            // ---
-
-            // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialChoice
-            if (req.url.includes('/pt/witch-power/trialChoice')) {
-                console.log('Modificando conteúdo para /trialChoice (preços e textos).');
-                $('body').html(function(i, originalHtml) {
-                    return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
-                        const usdValue = parseFloat(p1);
-                        const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                        return `R$ ${brlValue}`;
-                    });
-                });
-                $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
-                $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
-                $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
-                $('h2:contains("Trial Choice")').text('Escolha sua Prova Gratuita (Preços em Reais)');
-                $('p:contains("Selecione sua opção de teste")').text('Agora com preços adaptados para o Brasil!');
-            }
-
-            // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialPaymentancestral
-            if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
-                console.log('Modificando conteúdo para /trialPaymentancestral (preços e links de botões).');
-                $('body').html(function(i, originalHtml) {
-                    return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
-                        const usdValue = parseFloat(p1);
-                        const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                        return `R$ ${brlValue}`;
-                    });
-                });
-                $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
-                $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
-                $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
-                $('h1:contains("Trial Payment Ancestral")').text('Pagamento da Prova Ancestral (Preços e Links Atualizados)');
-            }
 
             res.status(response.status).send($.html());
         } else {
