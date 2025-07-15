@@ -25,7 +25,9 @@ app.use(fileUpload({
 // Middleware Principal do Proxy Reverso
 app.use(async (req, res) => {
     let targetDomain = MAIN_TARGET_URL;
+    let targetUrl;
     let requestPath = req.url;
+    let requestData = req.body;
 
     // Remove headers que podem causar problemas em proxies ou loops
     const requestHeaders = { ...req.headers };
@@ -38,9 +40,12 @@ app.use(async (req, res) => {
     if (req.url.startsWith('/api-nebula/')) {
         targetDomain = 'https://api.appnebula.co';
         requestPath = req.url.replace('/api-nebula', '');
+        console.log(`[API PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
+    } else if (req.url.startsWith('/logs-nebula/')) {
         targetDomain = 'https://logs.asknebula.com';
         requestPath = req.url.replace('/logs-nebula', '');
         console.log(`[LOGS PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
+    } else if (req.url.startsWith('/growthbook-nebula/')) {
         targetDomain = 'https://growthbook.nebulahoroscope.com';
         requestPath = req.url.replace('/growthbook-nebula', '');
         console.log(`[GROWTHBOOK PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
@@ -48,41 +53,14 @@ app.use(async (req, res) => {
         targetDomain = 'https://prod-tempo-web.nebulahoroscope.com';
         requestPath = req.url.replace('/tempo-nebula', '');
         console.log(`[TEMPO PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
-    }
-    // Lógica para Proxeamento do Subdomínio de Leitura (Mão)
-    else if (req.url.startsWith('/reading/')) {
+    } else if (req.url.startsWith('/reading/')) {
         targetDomain = READING_SUBDOMAIN_TARGET;
-        targetDomain = 'https://prod-tempo-web.nebulahoroscope.com';
-        requestPath = req.url.replace('/tempo-nebula', '');
-        console.log(`[TEMPO PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
-    }
-    // Lógica para Proxeamento do Subdomínio de Leitura (Mão)
-    else if (req.url.startsWith('/reading/')) {
-        targetDomain = READING_SUBDOMAIN_TARGET;
-        requestPath = req.url.substring('/reading'.length);
+        requestPath = req.url.replace('/reading', '');
         if (requestPath === '') requestPath = '/';
         console.log(`[READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
         console.log(`[READING PROXY] Método: ${req.method}`);
 
-        if (req.files && Object.keys(req.files).length > 0) {
-            console.log(`[READING PROXY] Arquivos recebidos: ${JSON.stringify(Object.keys(req.files))}`);
-            const photoFile = req.files.photo;
-            if (photoFile) {
-                console.log(`[READING PROXY] Arquivo 'photo': name=${photoFile.name}, size=${photoFile.size}, mimetype=${photoFile.mimetype}`);
-            }
-        } else {
-            console.log(`[READING PROXY] Corpo recebido (tipo): ${typeof req.body}`);
-        }
-    } else {
-        console.log(`[MAIN PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
-    }
-
-    const targetUrl = `${targetDomain}${requestPath}`;
-
-    try {
-        let requestData = req.body;
-
-        if (req.files && Object.keys(req.files).length > 0) {
+        if (req.method === 'POST' && req.files && req.files.photo) {
             const photoFile = req.files.photo;
 
             if (photoFile) {
@@ -97,7 +75,11 @@ app.use(async (req, res) => {
                 Object.assign(requestHeaders, formData.getHeaders());
             }
         }
+    }
 
+    targetUrl = `${targetDomain}${requestPath}`;
+
+    try {
         const response = await axios({
             method: req.method,
             url: targetUrl,
