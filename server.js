@@ -252,10 +252,9 @@ app.use(async (req, res) => {
                                 const trialButtons = document.querySelectorAll('button[data-testid="trial-choice-radio-button-label"]');
                                 if (trialButtons.length > 0) {
                                     trialButtons.forEach((button, index) => {
-                                        // Verifica se o texto do botão ainda contém um cifrão '$'
-                                        // Isso evita reescrever o texto se ele já foi alterado
-                                        // ou se o JS original do Next.js ainda não carregou o preço
-                                        if (newButtonPrices[index] && button.textContent.includes('$')) {
+                                        // **REMOVIDA A CONDIÇÃO: button.textContent.includes('$')**
+                                        // Agora forçamos a atualização do texto
+                                        if (newButtonPrices[index]) {
                                             button.textContent = newButtonPrices[index];
                                             console.log('CLIENT-SIDE CONTENT MOD: Botão de preço modificado: ' + newButtonPrices[index]);
                                             changedSomething = true;
@@ -264,7 +263,6 @@ app.use(async (req, res) => {
                                 }
 
                                 // Modificar o parágrafo de custo real
-                                // Buscar todos os elementos <p> e iterar para encontrar o que contém a frase
                                 const allParagraphs = document.querySelectorAll('p');
                                 allParagraphs.forEach(p => {
                                     if (p.textContent.includes('$13,67*') && p.classList.contains('sc-edafe909-6')) {
@@ -322,23 +320,27 @@ app.use(async (req, res) => {
                                 return changedSomething;
                             }
 
-                            // Tenta aplicar as modificações imediatamente
-                            if (applyTrialChoiceModifications()) {
-                                // Se as modificações iniciais funcionarem, pode não precisar do observer.
-                                // Mas manteremos para robustez.
-                            }
-
+                            // Tenta aplicar as modificações imediatamente com um pequeno atraso,
+                            // para dar mais tempo ao Next.js de renderizar o HTML inicial,
+                            // mesmo que ainda sem os valores de '$'.
+                            setTimeout(function() {
+                                if (applyTrialChoiceModifications()) {
+                                    console.log('CLIENT-SIDE CONTENT MOD: Modificações iniciais aplicadas após pequeno atraso.');
+                                }
+                            }, 50); // Atraso de 50ms
 
                             // Use um MutationObserver para detectar quando o conteúdo dinâmico é adicionado ou alterado
                             const observer = new MutationObserver(function(mutationsList, observer) {
-                                if (applyTrialChoiceModifications()) {
-                                    console.log('CLIENT-SIDE CONTENT MOD: Modificações aplicadas via MutationObserver. Desconectando.');
-                                    observer.disconnect();
-                                    // Limpa o setInterval de fallback também, se estiver rodando
-                                    if (window.fallbackTrialChoiceInterval) {
-                                        clearInterval(window.fallbackTrialChoiceInterval);
+                                // Atraso dentro do observer também, para dar mais tempo à renderização completa
+                                setTimeout(function() {
+                                    if (applyTrialChoiceModifications()) {
+                                        console.log('CLIENT-SIDE CONTENT MOD: Modificações aplicadas via MutationObserver. Desconectando.');
+                                        observer.disconnect();
+                                        if (window.fallbackTrialChoiceInterval) {
+                                            clearInterval(window.fallbackTrialChoiceInterval);
+                                        }
                                     }
-                                }
+                                }, 100); // Atraso de 100ms
                             });
 
                             // Observa mudanças no body e seus descendentes
@@ -349,10 +351,9 @@ app.use(async (req, res) => {
                                 if (applyTrialChoiceModifications()) {
                                     console.log('CLIENT-SIDE CONTENT MOD: Modificações aplicadas via fallback setInterval. Limpando.');
                                     clearInterval(window.fallbackTrialChoiceInterval);
-                                    observer.disconnect(); // Garante que o observer também pare
+                                    observer.disconnect();
                                 }
-                            }, 200); // Tenta a cada 200ms
-
+                            }, 300); // Aumentei para 300ms, dando mais tempo para o JS do site carregar
                         }); // Fim do DOMContentLoaded
                     </script>
                 `);
@@ -360,21 +361,17 @@ app.use(async (req, res) => {
             // ---
 
             // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialPaymentancestral
-            // Mantendo a lógica de servidor para esta página por enquanto, se não for SPA
             // Se esta página também for SPA, será necessário aplicar a mesma lógica client-side
             if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
                 console.log('Modificando conteúdo para /trialPaymentancestral (preços e links de botões).');
-                // Aqui você pode aplicar a mesma lógica de substituição específica ou manter a regex
-                // Se o problema de Next.js/TypeScript se aplicar aqui também, será preciso um script injetado similar
                 $('body').html(function(i, originalHtml) {
-                    // Esta regex ainda pode funcionar para texto simples dentro do HTML
                     return originalHtml.replace(/\$(\d+(\.\d{2})?)/g, (match, p1) => {
                         const usdValue = parseFloat(p1);
                         if (!isNaN(usdValue)) {
                             const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
                             return `R$ ${brlValue}`;
                         }
-                        return match; // Retorna o original se não conseguir converter
+                        return match;
                     });
                 });
                 $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
