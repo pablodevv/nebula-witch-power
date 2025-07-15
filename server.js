@@ -20,7 +20,8 @@ const TARGET_MAP = {
     '/reading': 'https://reading.nebulahoroscope.com', // Subdomínio para a leitura de mão
     '/logs': 'https://logs.asknebula.com', // Logs (sentry, grafana, etc.)
     '/tempo': 'https://prod-tempo-web.nebulahoroscope.com', // Outro endpoint de telemetria
-    '/': 'https://appnebula.co' // Domínio principal, deve ser o último
+    // O domínio principal DEVE terminar com uma barra se você quiser que caminhos sejam adicionados diretamente
+    '/': 'https://appnebula.co/' // *** CORREÇÃO AQUI: Adicionado barra final para garantir concatenação correta ***
 };
 
 // --- Configurações de Valores e Taxas ---
@@ -47,10 +48,16 @@ app.use(async (req, res) => {
     const sortedPrefixes = Object.keys(TARGET_MAP).sort((a, b) => b.length - a.length);
 
     for (const prefix of sortedPrefixes) {
+        // CORREÇÃO: Usar req.url.startsWith() é correto para determinar o prefixo.
         if (req.url.startsWith(prefix)) {
             targetBaseUrl = TARGET_MAP[prefix];
-            requestPath = req.url.substring(prefix.length); // Remove o prefixo do caminho para a URL real de destino
+            // CORREÇÃO: AQUI ESTAVA O PROBLEMA!
+            // Para garantir que o requestPath seja sempre relativo ao domínio de destino,
+            // e não cause 'appnebula.cofavicon.ico', removemos a barra inicial se existir.
+            requestPath = req.url.substring(prefix.length).trimStart('/');
             if (requestPath === '') requestPath = '/'; // Garante que '/prefixo' se torne '/' no destino
+            else requestPath = `/${requestPath}`; // Adiciona a barra de volta se não for vazio
+
             proxyPrefixFound = prefix;
             break; // Encontrou o prefixo mais específico, pode sair do loop
         }
@@ -121,7 +128,8 @@ app.use(async (req, res) => {
     }
     // Se nenhuma das condições acima for atendida, requestData permanece undefined (correto para GET, ou POST/PUT sem corpo)
 
-    const targetUrl = `${targetBaseUrl}${requestPath}`; // Monta a URL final para a requisição de destino
+    // CORREÇÃO: Montagem da URL de destino mais robusta
+    const targetUrl = new URL(requestPath, targetBaseUrl).href; // Usa o construtor URL para garantir a URL correta
 
     try {
         const response = await axios({
@@ -160,6 +168,11 @@ app.use(async (req, res) => {
                 let foundMatchForRedirect = false;
                 for (const prefix in TARGET_MAP) {
                     const originalTarget = TARGET_MAP[prefix];
+                    // CORREÇÃO: A URL de destino pode terminar em '/', então é melhor remover antes de comparar
+                    const cleanedOriginalTarget = originalTarget.endsWith('/') ? originalTarget.slice(0, -1) : originalTarget;
+                    const cleanedProxiedRedirectPath = proxiedRedirectPath.startsWith(cleanedOriginalTarget) ? proxiedRedirectPath.replace(cleanedOriginalTarget, '') : proxiedRedirectPath;
+
+
                     if (proxiedRedirectPath.startsWith(originalTarget)) {
                         // Se o prefixo mapeado é '/', o substituto é um caminho vazio (raiz do proxy)
                         if (prefix === '/') {
@@ -231,7 +244,7 @@ app.use(async (req, res) => {
                     let originalUrl = element.attr(attrName);
                     if (originalUrl) {
                         for (const prefix in TARGET_MAP) {
-                            const targetOriginal = TARGET_MAP[prefix]; // Ex: 'https://appnebula.co'
+                            const targetOriginal = TARGET_MAP[prefix]; // Ex: 'https://appnebula.co/'
                             if (originalUrl.startsWith(targetOriginal)) {
                                 if (prefix === '/') {
                                     // Se o prefixo é '/', remove o domínio original completamente
@@ -384,13 +397,13 @@ app.use(async (req, res) => {
                     }
 
                     if (originalContent && typeof originalContent === 'string') {
-                        // Regex para encontrar padrões de preço em dólar ($XX.YY)
-                        const priceRegex = /\$(\d+(?:,\d{2})?(?:\.\d{2})?)/g; // Melhorado para capturar $XX,YY ou $XX.YY
+                        // Regex para encontrar padrões de preço em dólar ($XX.YY ou $XX,YY)
+                        const priceRegex = /\$(\d+(?:[.,]\d{2})?)/g; // Captura tanto . quanto , para centavos
                         if (originalContent.match(priceRegex)) {
                             const newContent = originalContent.replace(priceRegex, (match, p1) => {
                                 // Limpa o valor para float (remove vírgulas de milhar, se houver, e muda vírgula decimal para ponto)
-                                const usdValueStr = p1.replace(/,/g, '').replace(/\./, '.'); // Ex: '13,99' -> '13.99'
-                                const usdValue = parseFloat(usdValueStr);
+                                const usdValueStr = p1.replace(/,/g, ''); // Remove vírgulas (de milhar)
+                                const usdValue = parseFloat(usdValueStr); // Parseia como float
 
                                 if (!isNaN(usdValue)) {
                                     const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ','); // Converte e formata para BRL
@@ -467,6 +480,7 @@ app.use(async (req, res) => {
                 res.status(error.response.status).send(`Erro ao carregar o conteúdo do site externo: ${error.response.statusText || 'Erro desconhecido'}. URL: ${targetUrl}`);
             }
         } else {
+            // Isso captura erros como ENOTFOUND
             res.status(500).send('Erro interno do servidor proxy: ' + error.message);
         }
     }
