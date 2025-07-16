@@ -43,23 +43,23 @@ app.use(async (req, res) => {
         targetDomain = READING_SUBDOMAIN_TARGET;
         requestPath = req.url.substring('/reading'.length);
         if (requestPath === '') requestPath = '/';
-        console.log([READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath});
-        console.log([READING PROXY] Método: ${req.method});
+        console.log(`[READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
+        console.log(`[READING PROXY] Método: ${req.method}`);
 
         if (req.files && Object.keys(req.files).length > 0) {
-            console.log([READING PROXY] Arquivos recebidos: ${JSON.stringify(Object.keys(req.files))});
+            console.log(`[READING PROXY] Arquivos recebidos: ${JSON.stringify(Object.keys(req.files))}`);
             const photoFile = req.files.photo;
             if (photoFile) {
-                console.log([READING PROXY] Arquivo 'photo': name=${photoFile.name}, size=${photoFile.size}, mimetype=${photoFile.mimetype});
+                console.log(`[READING PROXY] Arquivo 'photo': name=${photoFile.name}, size=${photoFile.size}, mimetype=${photoFile.mimetype}`);
             }
         } else {
-            console.log([READING PROXY] Corpo recebido (tipo): ${typeof req.body});
+            console.log(`[READING PROXY] Corpo recebido (tipo): ${typeof req.body}`);
         }
     } else {
-        console.log([MAIN PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath});
+        console.log(`[MAIN PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
     }
 
-    const targetUrl = ${targetDomain}${requestPath};
+    const targetUrl = `${targetDomain}${requestPath}`;
 
     try {
         let requestData = req.body;
@@ -118,7 +118,7 @@ app.use(async (req, res) => {
                 }
                 if (proxiedRedirectPath === '') proxiedRedirectPath = '/';
 
-                console.log(Redirecionamento do destino: ${fullRedirectUrl} -> Reescrevendo para: ${proxiedRedirectPath});
+                console.log(`Redirecionamento do destino: ${fullRedirectUrl} -> Reescrevendo para: ${proxiedRedirectPath}`);
                 return res.redirect(response.status, proxiedRedirectPath);
             }
         }
@@ -138,7 +138,7 @@ app.use(async (req, res) => {
                 return cookie
                     .replace(/Domain=[^;]+/, '')
                     .replace(/; Secure/, '')
-                    .replace(/; Path=\//, ; Path=${req.baseUrl || '/'});
+                    .replace(/; Path=\//, `; Path=${req.baseUrl || '/'}`);
             });
             res.setHeader('Set-Cookie', modifiedCookies);
         }
@@ -275,7 +275,7 @@ app.use(async (req, res) => {
                     return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
                         const usdValue = parseFloat(p1);
                         const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                        return R$ ${brlValue};
+                        return `R$ ${brlValue}`;
                     });
                 });
                 $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
@@ -292,7 +292,7 @@ app.use(async (req, res) => {
                     return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
                         const usdValue = parseFloat(p1);
                         const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                        return R$ ${brlValue};
+                        return `R$ ${brlValue}`;
                     });
                 });
                 $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
@@ -313,7 +313,7 @@ app.use(async (req, res) => {
             if (error.response.status === 508) {
                 res.status(508).send('Erro ao carregar o conteúdo do site externo: Loop Detectado. Por favor, verifique a configuração do proxy ou redirecionamentos.');
             } else {
-                res.status(error.response.status).send(Erro ao carregar o conteúdo do site externo: ${error.response.statusText || 'Erro desconhecido'});
+                res.status(error.response.status).send(`Erro ao carregar o conteúdo do site externo: ${error.response.statusText || 'Erro desconhecido'}`);
             }
         } else {
             res.status(500).send('Erro interno do servidor proxy.');
@@ -322,6 +322,6 @@ app.use(async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(Servidor proxy rodando em http://localhost:${PORT});
-    console.log(Acesse o site "clonado" em http://localhost:${PORT}/pt/witch-power/prelanding);
+    console.log(`Servidor proxy rodando em http://localhost:${PORT}`);
+    console.log(`Acesse o site "clonado" em http://localhost:${PORT}/pt/witch-power/prelanding`);
 });
