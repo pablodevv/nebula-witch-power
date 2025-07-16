@@ -14,10 +14,6 @@ const PORT = process.env.PORT || 10000;
 const MAIN_TARGET_URL = 'https://appnebula.co';
 const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
 
-// Configurações para Modificação de Conteúdo
-const USD_TO_BRL_RATE = 5.00;
-const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g;
-
 // Usa express-fileupload para lidar com uploads de arquivos (multipart/form-data)
 app.use(fileUpload({
     limits: { fileSize: 50 * 1024 * 1024 }, // Limite de 50MB, ajuste se necessário
@@ -29,7 +25,9 @@ app.use(fileUpload({
 // Middleware Principal do Proxy Reverso
 app.use(async (req, res) => {
     let targetDomain = MAIN_TARGET_URL;
+    let targetUrl;
     let requestPath = req.url;
+    let requestData = req.body;
 
     // Remove headers que podem causar problemas em proxies ou loops
     const requestHeaders = { ...req.headers };
@@ -38,33 +36,31 @@ app.use(async (req, res) => {
     delete requestHeaders['x-forwarded-for'];
     delete requestHeaders['accept-encoding'];
 
-    // Lógica para Proxeamento do Subdomínio de Leitura (Mão)
-    if (req.url.startsWith('/reading/')) {
+    // Interceptar chamadas de API externas ANTES do proxy principal
+    if (req.url.startsWith('/api-nebula/')) {
+        targetDomain = 'https://api.appnebula.co';
+        requestPath = req.url.replace('/api-nebula', '');
+        console.log(`[API PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
+    } else if (req.url.startsWith('/logs-nebula/')) {
+        targetDomain = 'https://logs.asknebula.com';
+        requestPath = req.url.replace('/logs-nebula', '');
+        console.log(`[LOGS PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
+    } else if (req.url.startsWith('/growthbook-nebula/')) {
+        targetDomain = 'https://growthbook.nebulahoroscope.com';
+        requestPath = req.url.replace('/growthbook-nebula', '');
+        console.log(`[GROWTHBOOK PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
+    } else if (req.url.startsWith('/tempo-nebula/')) {
+        targetDomain = 'https://prod-tempo-web.nebulahoroscope.com';
+        requestPath = req.url.replace('/tempo-nebula', '');
+        console.log(`[TEMPO PROXY] Interceptando: ${req.url} -> ${targetDomain}${requestPath}`);
+    } else if (req.url.startsWith('/reading/')) {
         targetDomain = READING_SUBDOMAIN_TARGET;
-        requestPath = req.url.substring('/reading'.length);
+        requestPath = req.url.replace('/reading', '');
         if (requestPath === '') requestPath = '/';
         console.log(`[READING PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
         console.log(`[READING PROXY] Método: ${req.method}`);
 
-        if (req.files && Object.keys(req.files).length > 0) {
-            console.log(`[READING PROXY] Arquivos recebidos: ${JSON.stringify(Object.keys(req.files))}`);
-            const photoFile = req.files.photo;
-            if (photoFile) {
-                console.log(`[READING PROXY] Arquivo 'photo': name=${photoFile.name}, size=${photoFile.size}, mimetype=${photoFile.mimetype}`);
-            }
-        } else {
-            console.log(`[READING PROXY] Corpo recebido (tipo): ${typeof req.body}`);
-        }
-    } else {
-        console.log(`[MAIN PROXY] Requisição: ${req.url} -> Proxy para: ${targetDomain}${requestPath}`);
-    }
-
-    const targetUrl = `${targetDomain}${requestPath}`;
-
-    try {
-        let requestData = req.body;
-
-        if (req.files && Object.keys(req.files).length > 0) {
+        if (req.method === 'POST' && req.files && req.files.photo) {
             const photoFile = req.files.photo;
 
             if (photoFile) {
@@ -79,7 +75,11 @@ app.use(async (req, res) => {
                 Object.assign(requestHeaders, formData.getHeaders());
             }
         }
+    }
 
+    targetUrl = `${targetDomain}${requestPath}`;
+
+    try {
         const response = await axios({
             method: req.method,
             url: targetUrl,
@@ -177,54 +177,88 @@ app.use(async (req, res) => {
                 }
             });
 
-            // Script para reescrever URLs de API dinâmicas no JavaScript
-            $('head').prepend(`
+            // SCRIPT DE INTERCEPTAÇÃO MELHORADO - Inserido ANTES de qualquer outro script
+            const interceptScript = `
                 <script>
-                    (function() {
-                        const readingSubdomainTarget = '${READING_SUBDOMAIN_TARGET}';
-                        const proxyPrefix = '/reading';
-
-                        const originalFetch = window.fetch;
-                        window.fetch = function(input, init) {
-                            let url = input;
-                            if (typeof input === 'string' && input.startsWith(readingSubdomainTarget)) {
-                                url = input.replace(readingSubdomainTarget, proxyPrefix);
-                                console.log('PROXY SHIM: REWRITE FETCH URL:', input, '->', url);
-                            } else if (input instanceof Request && input.url.startsWith(readingSubdomainTarget)) {
-                                url = new Request(input.url.replace(readingSubdomainTarget, proxyPrefix), {
-                                    method: input.method,
-                                    headers: input.headers,
-                                    body: input.body,
-                                    mode: input.mode,
-                                    credentials: input.credentials,
-                                    cache: input.cache,
-                                    redirect: input.redirect,
-                                    referrer: input.referrer,
-                                    integrity: input.integrity,
-                                    keepalive: input.keepalive
-                                });
-                                console.log('PROXY SHIM: REWRITE FETCH Request Object URL:', input.url, '->', url.url);
+                    console.log('🔧 PROXY INTERCEPTOR: Iniciando interceptação ANTES de qualquer outro script...');
+                    
+                    // Intercepta IMEDIATAMENTE XMLHttpRequest
+                    const originalXHROpen = XMLHttpRequest.prototype.open;
+                    XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
+                        let modifiedUrl = url;
+                        
+                        if (typeof url === 'string') {
+                            if (url.startsWith('https://api.appnebula.co/')) {
+                                modifiedUrl = url.replace('https://api.appnebula.co', '/api-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: XHR API →', url, '→', modifiedUrl);
+                            } else if (url.startsWith('https://logs.asknebula.com/')) {
+                                modifiedUrl = url.replace('https://logs.asknebula.com', '/logs-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: XHR LOGS →', url, '→', modifiedUrl);
+                            } else if (url.startsWith('https://growthbook.nebulahoroscope.com/')) {
+                                modifiedUrl = url.replace('https://growthbook.nebulahoroscope.com', '/growthbook-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: XHR GROWTHBOOK →', url, '→', modifiedUrl);
+                            } else if (url.startsWith('https://prod-tempo-web.nebulahoroscope.com/')) {
+                                modifiedUrl = url.replace('https://prod-tempo-web.nebulahoroscope.com', '/tempo-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: XHR TEMPO →', url, '→', modifiedUrl);
+                            } else if (url.startsWith('https://reading.nebulahoroscope.com/')) {
+                                modifiedUrl = url.replace('https://reading.nebulahoroscope.com', '/reading');
+                                console.log('🔧 PROXY INTERCEPTOR: XHR READING →', url, '→', modifiedUrl);
                             }
-                            return originalFetch.call(this, url, init);
-                        };
+                        }
+                        
+                        return originalXHROpen.call(this, method, modifiedUrl, async, user, password);
+                    };
 
-                        const originalXHRopen = XMLHttpRequest.prototype.open;
-                        XMLHttpRequest.prototype.open = function(method, url, async, user, password) {
-                            let modifiedUrl = url;
-                            if (typeof url === 'string' && url.startsWith(readingSubdomainTarget)) {
-                                modifiedUrl = url.replace(readingSubdomainTarget, proxyPrefix);
-                                console.log('PROXY SHIM: REWRITE XHR URL:', url, '->', modifiedUrl);
+                    // Intercepta IMEDIATAMENTE fetch
+                    const originalFetch = window.fetch;
+                    window.fetch = function(input, init) {
+                        let url = input;
+                        
+                        if (typeof input === 'string') {
+                            if (input.startsWith('https://api.appnebula.co/')) {
+                                url = input.replace('https://api.appnebula.co', '/api-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH API →', input, '→', url);
+                            } else if (input.startsWith('https://logs.asknebula.com/')) {
+                                url = input.replace('https://logs.asknebula.com', '/logs-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH LOGS →', input, '→', url);
+                            } else if (input.startsWith('https://growthbook.nebulahoroscope.com/')) {
+                                url = input.replace('https://growthbook.nebulahoroscope.com', '/growthbook-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH GROWTHBOOK →', input, '→', url);
+                            } else if (input.startsWith('https://prod-tempo-web.nebulahoroscope.com/')) {
+                                url = input.replace('https://prod-tempo-web.nebulahoroscope.com', '/tempo-nebula');
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH TEMPO →', input, '→', url);
+                            } else if (input.startsWith('https://reading.nebulahoroscope.com/')) {
+                                url = input.replace('https://reading.nebulahoroscope.com', '/reading');
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH READING →', input, '→', url);
                             }
-                            originalXHRopen.call(this, method, modifiedUrl, async, user, password);
-                        };
-                    })();
+                        } else if (input instanceof Request) {
+                            const originalUrl = input.url;
+                            if (originalUrl.startsWith('https://api.appnebula.co/')) {
+                                url = new Request(originalUrl.replace('https://api.appnebula.co', '/api-nebula'), input);
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH REQUEST API →', originalUrl, '→', url.url);
+                            } else if (originalUrl.startsWith('https://logs.asknebula.com/')) {
+                                url = new Request(originalUrl.replace('https://logs.asknebula.com', '/logs-nebula'), input);
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH REQUEST LOGS →', originalUrl, '→', url.url);
+                            } else if (originalUrl.startsWith('https://growthbook.nebulahoroscope.com/')) {
+                                url = new Request(originalUrl.replace('https://growthbook.nebulahoroscope.com', '/growthbook-nebula'), input);
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH REQUEST GROWTHBOOK →', originalUrl, '→', url.url);
+                            } else if (originalUrl.startsWith('https://prod-tempo-web.nebulahoroscope.com/')) {
+                                url = new Request(originalUrl.replace('https://prod-tempo-web.nebulahoroscope.com', '/tempo-nebula'), input);
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH REQUEST TEMPO →', originalUrl, '→', url.url);
+                            } else if (originalUrl.startsWith('https://reading.nebulahoroscope.com/')) {
+                                url = new Request(originalUrl.replace('https://reading.nebulahoroscope.com', '/reading'), input);
+                                console.log('🔧 PROXY INTERCEPTOR: FETCH REQUEST READING →', originalUrl, '→', url.url);
+                            }
+                        }
+                        
+                        return originalFetch.call(this, url, init);
+                    };
                 </script>
-            `);
+            `;
 
-            // ---
-            // REDIRECIONAMENTO CLIENT-SIDE MAIS AGRESSIVO PARA /pt/witch-power/email
-            // Este script será injetado em TODAS as páginas HTML para forçar o redirecionamento
-            $('head').append(`
+            $('head').prepend(interceptScript);
+
+            $('body').append(`
                 <script>
                     console.log('CLIENT-SIDE REDIRECT SCRIPT: Initializing.');
 
@@ -263,43 +297,8 @@ app.use(async (req, res) => {
 
                     // Tenta executar imediatamente também para casos onde o script é injetado muito cedo
                     handleEmailRedirect();
-
                 </script>
             `);
-            // ---
-
-            // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialChoice
-            if (req.url.includes('/pt/witch-power/trialChoice')) {
-                console.log('Modificando conteúdo para /trialChoice (preços e textos).');
-                $('body').html(function(i, originalHtml) {
-                    return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
-                        const usdValue = parseFloat(p1);
-                        const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                        return `R$ ${brlValue}`;
-                    });
-                });
-                $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
-                $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
-                $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
-                $('h2:contains("Trial Choice")').text('Escolha sua Prova Gratuita (Preços em Reais)');
-                $('p:contains("Selecione sua opção de teste")').text('Agora com preços adaptados para o Brasil!');
-            }
-
-            // MODIFICAÇÕES ESPECÍFICAS PARA /pt/witch-power/trialPaymentancestral
-            if (req.url.includes('/pt/witch-power/trialPaymentancestral')) {
-                console.log('Modificando conteúdo para /trialPaymentancestral (preços e links de botões).');
-                $('body').html(function(i, originalHtml) {
-                    return originalHtml.replace(CONVERSION_PATTERN, (match, p1) => {
-                        const usdValue = parseFloat(p1);
-                        const brlValue = (usdValue * USD_TO_BRL_RATE).toFixed(2).replace('.', ',');
-                        return `R$ ${brlValue}`;
-                    });
-                });
-                $('#buyButtonAncestral').attr('href', 'https://seusite.com/link-de-compra-ancestral-em-reais');
-                $('.cta-button-trial').attr('href', 'https://seusite.com/novo-link-de-compra-geral');
-                $('a:contains("Comprar Agora")').attr('href', 'https://seusite.com/meu-novo-link-de-compra-agora');
-                $('h1:contains("Trial Payment Ancestral")').text('Pagamento da Prova Ancestral (Preços e Links Atualizados)');
-            }
 
             res.status(response.status).send($.html());
         } else {
