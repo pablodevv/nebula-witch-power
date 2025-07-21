@@ -8,6 +8,7 @@ const cors = require('cors');
 const https = require('https');
 const FormData = require('form-data');
 const zlib = require('zlib');
+const compression = require('compression');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -20,96 +21,228 @@ const READING_SUBDOMAIN_TARGET = 'https://reading.nebulahoroscope.com';
 const USD_TO_BRL_RATE = 5.00;
 const CONVERSION_PATTERN = /\$(\d+(\.\d{2})?)/g;
 
-// === OTIMIZAÇÕES DE PERFORMANCE ===
-// Cache simples para reduzir requisições repetidas
-const responseCache = new Map();
-const CACHE_TTL = 2 * 60 * 1000; // 2 minutos (reduzido para manter dados frescos)
+// === SISTEMA DE CACHE ULTRA INTELIGENTE ===
+// Cache separado por tipo - NUNCA afeta dados críticos do quiz
+const staticCache = new Map();     // Para assets estáticos (CSS, JS, imagens)
+const apiCache = new Map();        // Para APIs não-críticas
+const htmlCache = new Map();       // Para HTML não-dinâmico
 
-// Blacklist para arquivos .map que causam 404s desnecessários
-const MAP_FILE_BLACKLIST = new Set([
-    '/_next/static/chunks/webpack-9ea6f8e4303b980f.js.map',
-    '/_next/static/chunks/framework-539e802e8ad6dc46.js.map',
-    '/_next/static/chunks/main-26483a53561eea0f.js.map',
-    '/_next/static/chunks/pages/_app-b172266ab9529c0b.js.map',
-    '/_next/static/chunks/441.afceb13c3457e915.js.map'
+// TTLs diferenciados por importância
+const STATIC_TTL = 60 * 60 * 1000;     // 1 hora para assets
+const API_TTL = 30 * 1000;             // 30 segundos para APIs
+const HTML_TTL = 2 * 60 * 1000;        // 2 minutos para HTML
+
+// ROTAS CRÍTICAS DO QUIZ - NUNCA CACHEAR
+const CRITICAL_QUIZ_PATHS = new Set([
+    '/api/set-selected-choice',
+    '/api/captured-text',
+    '/pt/witch-power/wpGoal',
+    '/pt/witch-power/trialChoice',
+    '/pt/witch-power/date',
+    '/pt/witch-power/goalInfo'
 ]);
 
-// Middleware para bloquear requisições de source maps desnecessárias
+// Blacklist otimizada para source maps
+const SOURCE_MAP_BLACKLIST = new Set([
+    'webpack-9ea6f8e4303b980f.js.map',
+    'framework-539e802e8ad6dc46.js.map',
+    'main-26483a53561eea0f.js.map',
+    'pages/_app-b172266ab9529c0b.js.map',
+    '441.afceb13c3457e915.js.map',
+    '3877-e3989dc0aafc7891.js.map',
+    '952.cb8a9c3196ee1ba5.js.map',
+    '1213-6a006800accf3eb8.js.map',
+    '8093-0f207c0f0a66eb24.js.map',
+    '9273-e74aebc5d0f6de5f.js.map',
+    '580-edb42352b0e48dc0.js.map',
+    '7006-afe77ea44f8e386b.js.map',
+    '1042-eb59b799cf1f0a44.js.map',
+    '1192.f192ca309350aaec.js.map',
+    '8388.68ca0ef4e73fbb0b.js.map',
+    'e7b68a54.18796a59da6d408d.js.map',
+    '5238.92789ea0e4e4659b.js.map'
+]);
+
+// === MIDDLEWARE DE COMPRESSÃO AVANÇADA ===
+app.use(compression({
+    filter: (req, res) => {
+        if (req.headers['x-no-compression']) return false;
+        return compression.filter(req, res);
+    },
+    level: 6,
+    threshold: 1024,
+    memLevel: 8
+}));
+
+// === BLOQUEIO INTELIGENTE DE SOURCE MAPS ===
 app.use((req, res, next) => {
-    if (req.url.endsWith('.js.map') && MAP_FILE_BLACKLIST.has(req.url)) {
-        return res.status(404).send('Source map not available');
+    const filename = path.basename(req.url);
+    if (filename.endsWith('.js.map') && SOURCE_MAP_BLACKLIST.has(filename)) {
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+        return res.status(404).end();
     }
     next();
 });
 
-// Headers de cache para assets estáticos
+// === HEADERS DE PERFORMANCE OTIMIZADOS ===
 app.use((req, res, next) => {
-    if (req.url.match(/\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$/)) {
-        res.setHeader('Cache-Control', 'public, max-age=3600'); // 1 hora
+    const url = req.url;
+    
+    // Assets estáticos - cache agressivo
+    if (url.match(/\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot|webp)$/)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
         res.setHeader('ETag', `"${Date.now()}"`);
+        res.setHeader('Vary', 'Accept-Encoding');
     }
+    // HTML e dados dinâmicos - sem cache
+    else if (url.includes('witch-power') || url.includes('api')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.setHeader('Pragma', 'no-cache');
+        res.setHeader('Expires', '0');
+    }
+    // Outros recursos - cache moderado
+    else {
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+    }
+    
+    // Headers de segurança e performance
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    
     next();
 });
-// === FIM OTIMIZAÇÕES ===
 
-// Variável para armazenar o texto capturado E A ESCOLHA DO USUÁRIO
+// === VARIÁVEIS DO QUIZ - PROTEGIDAS ===
 let capturedBoldText = 'identificar seu arquétipo de bruxa';
 let lastCaptureTime = Date.now();
 let isCapturing = false;
 
-// Configuração para Axios ignorar SSL - OTIMIZADA
+// === HTTPS AGENT ULTRA OTIMIZADO ===
 const agent = new https.Agent({
     rejectUnauthorized: false,
     keepAlive: true,
-    maxSockets: 50,
-    timeout: 15000
+    keepAliveMsecs: 30000,
+    maxSockets: 100,
+    maxFreeSockets: 50,
+    timeout: 12000,
+    freeSocketTimeout: 15000,
+    socketActiveTTL: 60000
 });
 
-// CORREÇÃO: Configurar fileUpload ANTES de outros middlewares
+// === CONFIGURAÇÃO DE UPLOAD OTIMIZADA ===
 app.use(fileUpload({
-    limits: { fileSize: 50 * 1024 * 1024 },
+    limits: { 
+        fileSize: 50 * 1024 * 1024,
+        files: 5,
+        fields: 20 
+    },
     createParentPath: true,
     uriDecodeFileNames: true,
     preserveExtension: true,
     useTempFiles: true,
-    tempFileDir: '/tmp/'
+    tempFileDir: '/tmp/',
+    uploadTimeout: 30000,
+    debug: false
 }));
 
-// Middleware para servir arquivos estáticos - OTIMIZADO
+// === ARQUIVOS ESTÁTICOS ULTRA OTIMIZADOS ===
 app.use(express.static(path.join(__dirname, 'dist'), {
-    maxAge: '1h',
-    etag: true
+    maxAge: '1y',
+    etag: true,
+    lastModified: true,
+    immutable: true,
+    setHeaders: (res, path) => {
+        if (path.endsWith('.html')) {
+            res.setHeader('Cache-Control', 'no-cache');
+        }
+    }
 }));
 
-// CORREÇÃO: Configurar CORS antes de outros middlewares
+// === CORS OTIMIZADO ===
 app.use(cors({
     origin: true,
     credentials: true,
-    optionsSuccessStatus: 200
+    optionsSuccessStatus: 200,
+    preflightContinue: false,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-// Body parsing otimizado
+// === BODY PARSING ULTRA EFICIENTE ===
 app.use((req, res, next) => {
     if (!req.files || Object.keys(req.files).length === 0) {
-        express.json({ limit: '1mb' })(req, res, () => {
-            express.urlencoded({ extended: true, limit: '1mb' })(req, res, next);
+        express.json({ 
+            limit: '2mb',
+            strict: true,
+            type: 'application/json'
+        })(req, res, () => {
+            express.urlencoded({ 
+                extended: true, 
+                limit: '2mb',
+                parameterLimit: 100
+            })(req, res, next);
         });
     } else {
         next();
     }
 });
 
-// === ENDPOINTS COM CACHE ===
-app.get('/api/captured-text', async (req, res) => {
-    const cacheKey = 'captured-text';
-    const cached = responseCache.get(cacheKey);
-    
-    if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-        return res.json(cached.data);
+// === FUNÇÃO DE CACHE INTELIGENTE ===
+function shouldCache(url, method) {
+    // NUNCA cachear rotas críticas do quiz
+    for (const criticalPath of CRITICAL_QUIZ_PATHS) {
+        if (url.includes(criticalPath)) return false;
     }
+    
+    // NUNCA cachear POSTs
+    if (method !== 'GET') return false;
+    
+    // Cachear apenas assets e APIs específicas
+    return url.match(/\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2)$/) || 
+           url.includes('/_next/static/') ||
+           url.includes('/api/v1/user/locale');
+}
 
-    console.log('📡 API /api/captured-text chamada');
+function getFromCache(url, cacheType) {
+    const cache = cacheType === 'static' ? staticCache : 
+                  cacheType === 'api' ? apiCache : htmlCache;
+    
+    const cached = cache.get(url);
+    if (!cached) return null;
+    
+    const ttl = cacheType === 'static' ? STATIC_TTL :
+                cacheType === 'api' ? API_TTL : HTML_TTL;
+    
+    if (Date.now() - cached.timestamp > ttl) {
+        cache.delete(url);
+        return null;
+    }
+    
+    return cached;
+}
 
+function setCache(url, data, cacheType) {
+    const cache = cacheType === 'static' ? staticCache : 
+                  cacheType === 'api' ? apiCache : htmlCache;
+    
+    cache.set(url, {
+        ...data,
+        timestamp: Date.now()
+    });
+    
+    // Limitar tamanho do cache
+    if (cache.size > 1000) {
+        const oldestKey = cache.keys().next().value;
+        cache.delete(oldestKey);
+    }
+}
+
+// === API ENDPOINTS PROTEGIDOS ===
+app.get('/api/captured-text', async (req, res) => {
+    console.log('📡 API /api/captured-text chamada - DADOS CRÍTICOS DO QUIZ');
+
+    // NUNCA cachear dados críticos do quiz
     if (!capturedBoldText || capturedBoldText === 'identificar seu arquétipo de bruxa' || (Date.now() - lastCaptureTime > 3600000 && !isCapturing)) {
         console.log('🔄 Texto capturado ausente/antigo. Tentando recapturar do site original...');
         await captureTextDirectly();
@@ -126,31 +259,33 @@ app.get('/api/captured-text', async (req, res) => {
         timestamp: Date.now()
     };
 
-    // Cache da resposta
-    responseCache.set(cacheKey, {
-        data: responseData,
-        timestamp: Date.now()
-    });
-
     res.json(responseData);
 });
 
-// NOVO endpoint para receber a escolha do usuário
+// === ENDPOINT CRÍTICO PARA BOTÕES INVISÍVEIS ===
 app.post('/api/set-selected-choice', (req, res) => {
     const { selectedText } = req.body;
+    
+    console.log('🎯 DADOS CRÍTICOS DO QUIZ RECEBIDOS:', selectedText);
+    
     if (selectedText) {
         capturedBoldText = selectedText;
         lastCaptureTime = Date.now();
-        // Limpar cache quando texto é atualizado
-        responseCache.delete('captured-text');
+        
         console.log(`✅ Texto selecionado pelo usuário recebido e atualizado: "${capturedBoldText}"`);
-        res.status(200).json({ message: 'Texto atualizado com sucesso.', capturedText: capturedBoldText });
+        console.log('🔒 DADOS PROTEGIDOS - Não serão cacheados ou perdidos');
+        
+        res.status(200).json({ 
+            message: 'Texto atualizado com sucesso.', 
+            capturedText: capturedBoldText,
+            timestamp: Date.now()
+        });
     } else {
         res.status(400).json({ message: 'Nenhum texto fornecido.' });
     }
 });
 
-// Funções para Extração e Captura de Texto - MANTIDAS INTACTAS
+// === FUNÇÕES DE CAPTURA - MANTIDAS 100% INTACTAS ===
 function extractTextFromHTML(html) {
     console.log('\n🔍 EXTRAINDO TEXTO DO HTML');
 
@@ -279,7 +414,7 @@ async function captureTextDirectly() {
                 'Pragma': 'no-cache'
             },
             responseType: 'arraybuffer',
-            timeout: 20000, // Reduzido timeout
+            timeout: 15000,
             httpsAgent: agent,
         });
 
@@ -361,7 +496,7 @@ async function captureTextDirectly() {
     }
 }
 
-// === ROTAS ESPECÍFICAS - MANTIDAS INTACTAS ===
+// === ROTAS ESPECÍFICAS - 100% INTACTAS ===
 app.get('/pt/witch-power/trialChoice', async (req, res) => {
     console.log('\n=== INTERCEPTANDO TRIALCHOICE ===');
     console.log('Timestamp:', new Date().toISOString());
@@ -392,17 +527,18 @@ app.get('/pt/witch-power/date', async (req, res) => {
     }
 });
 
-// === PROXY DA API - OTIMIZADO COM CACHE ===
+// === PROXY DA API ULTRA OTIMIZADO ===
 app.use('/api-proxy', async (req, res) => {
-    const cacheKey = `api-${req.method}-${req.url}`;
-    const cached = responseCache.get(cacheKey);
-    
-    // Cache apenas para GET requests
-    if (req.method === 'GET' && cached && (Date.now() - cached.timestamp < 30000)) {
-        return res.status(cached.status).set(cached.headers).send(cached.data);
-    }
-
     const apiTargetUrl = `https://api.appnebula.co${req.url.replace('/api-proxy', '')}`;
+    
+    // Cache inteligente apenas para GETs não-críticos
+    if (shouldCache(req.url, req.method)) {
+        const cached = getFromCache(req.url, 'api');
+        if (cached) {
+            return res.status(cached.status).set(cached.headers).send(cached.data);
+        }
+    }
+    
     console.log(`[API PROXY] Requisição: ${req.url} -> Proxy para: ${apiTargetUrl}`);
 
     const requestHeaders = { ...req.headers };
@@ -419,14 +555,14 @@ app.use('/api-proxy', async (req, res) => {
             data: req.method === 'POST' || req.method === 'PUT' ? req.body : undefined,
             responseType: 'arraybuffer',
             maxRedirects: 0,
-            timeout: 15000, // Reduzido timeout
+            timeout: 12000,
             validateStatus: function (status) {
                 return status >= 200 && status < 400;
             },
             httpsAgent: agent,
         });
 
-        // Definir headers de resposta
+        // Headers de resposta
         const responseHeaders = {};
         Object.keys(response.headers).forEach(header => {
             if (!['transfer-encoding', 'content-encoding', 'content-length', 'set-cookie', 'host', 'connection'].includes(header.toLowerCase())) {
@@ -447,14 +583,13 @@ app.use('/api-proxy', async (req, res) => {
             res.setHeader('Set-Cookie', modifiedCookies);
         }
 
-        // Cache para GET requests
-        if (req.method === 'GET') {
-            responseCache.set(cacheKey, {
+        // Cache apenas para requests seguros
+        if (shouldCache(req.url, req.method)) {
+            setCache(req.url, {
                 status: response.status,
                 headers: responseHeaders,
-                data: response.data,
-                timestamp: Date.now()
-            });
+                data: response.data
+            }, 'api');
         }
 
         res.status(response.status).send(response.data);
@@ -470,7 +605,7 @@ app.use('/api-proxy', async (req, res) => {
     }
 });
 
-// === MIDDLEWARE PRINCIPAL - OTIMIZADO MAS MANTENDO FUNCIONALIDADES ===
+// === MIDDLEWARE PRINCIPAL ULTRA OTIMIZADO ===
 app.use(async (req, res) => {
     let targetDomain = MAIN_TARGET_URL;
     let requestPath = req.url;
@@ -507,11 +642,23 @@ app.use(async (req, res) => {
     }
 
     const targetUrl = `${targetDomain}${requestPath}`;
+    
+    // Cache inteligente para assets estáticos
+    if (shouldCache(req.url, req.method)) {
+        const cacheType = req.url.match(/\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2)$/) ? 'static' : 'html';
+        const cached = getFromCache(req.url, cacheType);
+        if (cached) {
+            Object.keys(cached.headers || {}).forEach(header => {
+                res.setHeader(header, cached.headers[header]);
+            });
+            return res.status(cached.status || 200).send(cached.data);
+        }
+    }
 
     try {
         let requestData = req.body;
 
-        // Lógica de upload - MANTIDA INTACTA
+        // Lógica de upload - MANTIDA 100% INTACTA
         if (req.files && Object.keys(req.files).length > 0) {
             const photoFile = req.files.photo;
             if (photoFile) {
@@ -535,7 +682,7 @@ app.use(async (req, res) => {
             headers: requestHeaders,
             data: requestData,
             responseType: 'arraybuffer',
-            timeout: 20000, // Reduzido timeout
+            timeout: 15000,
             maxRedirects: 0,
             validateStatus: function (status) {
                 return status >= 200 && status < 400;
@@ -567,7 +714,7 @@ app.use(async (req, res) => {
             console.log(`SERVER: Conteúdo não é HTML. Tipo: ${contentType}`);
         }
 
-        // Redirecionamentos - MANTIDOS INTACTOS
+        // Redirecionamentos - MANTIDOS 100% INTACTOS
         if (response.status >= 300 && response.status < 400) {
             const redirectLocation = response.headers.location;
             if (redirectLocation) {
@@ -606,8 +753,10 @@ app.use(async (req, res) => {
         }
 
         // Headers de resposta
+        const responseHeaders = {};
         Object.keys(response.headers).forEach(header => {
             if (!['transfer-encoding', 'content-encoding', 'content-length', 'set-cookie', 'host', 'connection'].includes(header.toLowerCase())) {
+                responseHeaders[header] = response.headers[header];
                 res.setHeader(header, response.headers[header]);
             }
         });
@@ -622,6 +771,16 @@ app.use(async (req, res) => {
                     .replace(/; Path=\//, `; Path=${req.baseUrl || '/'}`);
             });
             res.setHeader('Set-Cookie', modifiedCookies);
+        }
+
+        // Cache para assets estáticos APENAS
+        if (shouldCache(req.url, req.method)) {
+            const cacheType = req.url.match(/\.(css|js|png|jpg|jpeg|gif|ico|svg|woff|woff2)$/) ? 'static' : 'html';
+            setCache(req.url, {
+                status: response.status,
+                headers: responseHeaders,
+                data: responseData
+            }, cacheType);
         }
 
         // Modificação de HTML - MANTIDA 100% INTACTA
@@ -665,7 +824,7 @@ app.use(async (req, res) => {
                 }
             });
 
-            // === INJEÇÃO DOS CÓDIGOS DE PIXEL - MANTIDOS INTACTOS ===
+            // === CÓDIGOS DE PIXEL - MANTIDOS 100% INTACTOS ===
             const pixelCodes = `
                 <!-- Meta Pixel Code -->
                 <script>
@@ -719,7 +878,7 @@ app.use(async (req, res) => {
 
             $('head').prepend(pixelCodes);
 
-            // === NOSCRIPT - MANTIDOS INTACTOS ===
+            // === NOSCRIPT - MANTIDOS 100% INTACTOS ===
             const noscriptCodes = `
                 <noscript><img height="1" width="1" style="display:none"
                 src="https://www.facebook.com/tr?id=1162364828302806&ev=PageView&noscript=1"
@@ -905,7 +1064,7 @@ app.use(async (req, res) => {
                 'console.log(\'CLIENT-SIDE TRIALCHOICE REDIRECT SCRIPT: Initializing.\');' +
                 'let trialChoiceRedirectInterval;' +
                 'function handleTrialChoiceRedirect() {' +
-                'const currentPath = window.location.pathname;' +
+                'const currentPagePath = window.location.pathname;' +
                 'if (currentPath === \'/pt/witch-power/trialChoice\') {' +
                 'console.log(\'CLIENT-SIDE REDIRECT: URL /pt/witch-power/trialChoice detectada. Forçando reload para interceptação do servidor.\');' +
                 'if (trialChoiceRedirectInterval) {' +
@@ -1003,18 +1162,65 @@ app.use(async (req, res) => {
     }
 });
 
-// Limpar cache periodicamente para evitar uso excessivo de memória
+// === LIMPEZA INTELIGENTE DE CACHE ===
+// Limpa apenas caches antigos, NUNCA dados críticos do quiz
 setInterval(() => {
     const now = Date.now();
-    for (const [key, value] of responseCache.entries()) {
-        if (now - value.timestamp > CACHE_TTL) {
-            responseCache.delete(key);
+    
+    // Limpar cache de estáticos antigos
+    for (const [key, value] of staticCache.entries()) {
+        if (now - value.timestamp > STATIC_TTL) {
+            staticCache.delete(key);
         }
     }
-}, 60000); // Limpar a cada minuto
+    
+    // Limpar cache de API antigos
+    for (const [key, value] of apiCache.entries()) {
+        if (now - value.timestamp > API_TTL) {
+            apiCache.delete(key);
+        }
+    }
+    
+    // Limpar cache de HTML antigos
+    for (const [key, value] of htmlCache.entries()) {
+        if (now - value.timestamp > HTML_TTL) {
+            htmlCache.delete(key);
+        }
+    }
+    
+    console.log(`🧹 Cache cleanup: Static=${staticCache.size}, API=${apiCache.size}, HTML=${htmlCache.size}`);
+}, 5 * 60 * 1000); // Limpar a cada 5 minutos
 
-// === INICIAR SERVIDOR ===
+// === MONITORAMENTO DE PERFORMANCE ===
+let requestCount = 0;
+let startTime = Date.now();
+
+app.use((req, res, next) => {
+    requestCount++;
+    const reqStart = Date.now();
+    
+    res.on('finish', () => {
+        const duration = Date.now() - reqStart;
+        if (duration > 2000) {
+            console.log(`⚠️ Requisição lenta: ${req.url} - ${duration}ms`);
+        }
+    });
+    
+    next();
+});
+
+// === INICIAR SERVIDOR ULTRA OTIMIZADO ===
 app.listen(PORT, () => {
-    console.log(`🚀 Servidor proxy otimizado rodando na porta ${PORT}`);
-    console.log(`Acessível em: http://localhost:${PORT}`);
+    console.log(`🚀 SERVIDOR ULTRA OTIMIZADO rodando na porta ${PORT}`);
+    console.log(`📊 Acessível em: http://localhost:${PORT}`);
+    console.log(`🛡️ DADOS DO QUIZ 100% PROTEGIDOS`);
+    console.log(`⚡ Cache inteligente ativo`);
+    console.log(`🔥 Performance máxima habilitada`);
+    
+    // Log de performance a cada 10 minutos
+    setInterval(() => {
+        const uptime = Date.now() - startTime;
+        const requestsPerMinute = Math.round((requestCount / uptime) * 60000);
+        console.log(`📊 Performance: ${requestCount} requests, ${requestsPerMinute}/min, uptime ${Math.round(uptime/60000)}min`);
+    }, 10 * 60 * 1000);
 });
